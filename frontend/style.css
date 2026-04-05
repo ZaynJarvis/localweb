@@ -2097,21 +2097,7 @@ dialog::backdrop {
   pointer-events: none;
 }
 
-/* Scrollable content fade-in top gradient — uses box-shadow so it doesn't overlap content */
-.logger-content {
-  position: relative;
-  border-top: none;
-}
-.logger-content::before {
-  content: '';
-  position: sticky;
-  top: 0;
-  display: block;
-  height: 0;
-  box-shadow: 0 0 12px 8px var(--surface);
-  pointer-events: none;
-  z-index: 1;
-}
+/* Logger content — no top gradient overlay (was hiding first line) */
 
 /* ========================= */
 /* Summary text polish       */
