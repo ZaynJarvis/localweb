@@ -195,3 +195,76 @@ On post creation (`POST /api/posts`), two background tasks auto-fire:
 2. `auto_generate_post_metadata()` in `services/post_service.py` — generates bilingual summary + 7-word title (1s delay, best-effort)
 
 Frontend polls for summary completion via `modules/summary.js` (3s interval, 30s timeout).
+
+## Domain-Driven Design (DDD) Structure
+
+localweb is organized into five bounded contexts plus a shared kernel:
+
+### Bounded Contexts
+
+1. **API Runner Domain** — HTTP request execution engine
+   - CRUD for API templates, curl import, run history
+   - Single, parallel (SSE), and regional (SSE) execution
+   - **Backend**: `services/api_runner.py`, `services/curl_parser.py`, `routes/api_routes.py`, `db.py:91–167`
+   - **Frontend**: `modules/api-runner.js`, `modules/api-client.js:4–39`
+   - **Aggregate root**: API (with Runs as children, cascade delete)
+   - **Used by**: Posts (chat API for summaries), Showcase (image-gen API)
+
+2. **Posts Domain** — Content management + AI metadata
+   - Post CRUD, image download/caching, bilingual summary + title generation
+   - Search via OpenViking + LLM augmentation, summary chat refinement
+   - **Backend**: `services/post_service.py`, `routes/post_routes.py`, `db.py:169–265`
+   - **Frontend**: `modules/posts-reader.js`, `modules/summary.js`, `modules/api-client.js:41–208`
+   - **Aggregate root**: Post (with images, summary, title)
+   - **Depends on**: API Runner (chat APIs), Settings (prompts/language)
+
+3. **Showcase Domain** — AI image generation + gallery curation
+   - Two-step generation: LLM prompt expansion → image-gen API
+   - Gallery with like/activate/delete lifecycle
+   - **Backend**: `services/showcase_service.py`, `routes/showcase_routes.py`, `db.py:268–302`
+   - **Frontend**: `modules/showcase.js`, `modules/gallery.js`, `modules/api-client.js:84–120`
+   - **Aggregate root**: GalleryImage
+   - **Depends on**: API Runner (image-gen + chat APIs), Settings (showcase_prompt)
+
+4. **Settings Domain** — Centralized configuration
+   - Key/value store: prompts, language, color palette, custom colors
+   - **Backend**: `routes/settings_routes.py`, `db.py` (get/set_setting)
+   - **Frontend**: `modules/settings.js`, `modules/api-client.js:64–76`
+   - **Consumed by**: Posts, Showcase, frontend (palette)
+
+5. **Logger Domain** — Terminal session history (standalone)
+   - Integrates with `~/code/tmux-journal/` (external subprocess calls)
+   - Memory topics, entity consolidation, pane logs, session summaries
+   - **Backend**: `routes/logger_routes.py`
+   - **Frontend**: `modules/logger.js`
+   - **Data**: `~/.tmux-journal/` (pane logs, summary.log, memory/)
+   - **No dependency** on other domains
+
+6. **Shared Kernel** — Infrastructure
+   - `db.py` (SQLite async CRUD, migrations)
+   - `services/env.py` (zsh env loading, $VAR substitution)
+   - `models.py` (Pydantic DTOs), `config.py` (paths, defaults)
+   - `modules/utils.js`, `modules/state.js`, `modules/api-client.js`
+   - `app.js`, `index.html` (SPA shell, hash routing)
+
+### Dependency Graph (no cycles)
+
+```
+Shared Kernel ← all domains
+API Runner ← Posts, Showcase (for HTTP execution)
+Settings  ← Posts, Showcase (for config)
+Logger    ← (standalone, no inbound deps)
+```
+
+### Ubiquitous Language
+
+| Term | Domain | Meaning |
+|------|--------|---------|
+| API | Runner | HTTP request template (method, url, headers, body) |
+| Run / Snapshot | Runner | Execution instance; resolved request state at time of execution |
+| Post | Posts | Saved article/tweet with metadata |
+| Summary | Posts | Bilingual {en, zh} LLM-generated analysis |
+| Showcase | Showcase | Currently displayed AI-generated image |
+| Gallery | Showcase | Curated collection of liked images |
+| Topic | Logger | Terminal session event cluster |
+| Entity | Logger | Consolidated topic representation with insights |
