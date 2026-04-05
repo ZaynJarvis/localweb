@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LocalWeb</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="layout">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <div class="nav-tabs">
+          <button class="nav-tab active" data-view="apis" id="tab-apis">APIs</button>
+          <button class="nav-tab" data-view="posts" id="tab-posts">Posts</button>
+          <button class="nav-tab" data-view="logger" id="tab-logger">Logger</button>
+        </div>
+        <div class="sidebar-btns" id="sidebar-btns-apis">
+          <button class="btn-icon btn-import-curl" id="btn-import" title="Import from curl">&#x2913;</button>
+          <button class="btn-icon" id="btn-new" title="New API">+</button>
+        </div>
+        <div class="sidebar-btns hidden" id="sidebar-btns-posts">
+          <button class="btn-icon" id="btn-posts-settings" title="Posts Settings">&#9881;</button>
+          <button class="btn-icon" id="btn-gallery" title="Gallery"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><rect x="0" y="0" width="6" height="6"/><rect x="8" y="0" width="6" height="6"/><rect x="0" y="8" width="6" height="6"/><rect x="8" y="8" width="6" height="6"/></svg></button>
+        </div>
+        <div class="search-bar hidden" id="search-bar">
+          <input type="text" id="search-input" placeholder="Search posts and knowledge..." />
+        </div>
+      </div>
+      <!-- APIs sidebar list -->
+      <ul class="api-list" id="api-list"></ul>
+      <!-- Posts sidebar list -->
+      <ul class="api-list hidden" id="posts-sidebar-list"></ul>
+      <!-- Logger sidebar list -->
+      <div class="hidden" id="logger-sidebar-list"></div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main" id="main">
+      <!-- APIs view -->
+      <section id="apis-view">
+        <div class="empty-state" id="empty-state">
+          <p>Select an API from the sidebar or click <strong>+</strong> to add one.</p>
+        </div>
+
+        <!-- API Detail Panel -->
+        <div class="panel hidden" id="panel">
+          <div class="panel-header">
+            <input class="panel-title" id="field-name" type="text" placeholder="API Name" />
+            <div class="panel-actions">
+              <button class="btn btn-run" id="btn-run">&#9654; Run</button>
+              <button class="btn btn-save" id="btn-save">Save</button>
+              <button class="btn btn-delete" id="btn-delete">Delete</button>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <select id="field-method">
+              <option>POST</option><option>GET</option><option>PUT</option>
+              <option>PATCH</option><option>DELETE</option>
+            </select>
+            <input class="flex1" id="field-url" type="text" placeholder="https://..." />
+            <label class="parallel-label" for="field-parallel">Parallel</label>
+            <input id="field-parallel" class="parallel-input" type="number" min="1" max="16" value="1" title="Number of parallel requests" />
+          </div>
+
+          <!-- Prompt / Input (shown when body has prompt or input key) -->
+          <div class="prompt-block hidden" id="prompt-block">
+            <label id="prompt-label">Prompt</label>
+            <textarea id="field-prompt" rows="5" spellcheck="true" placeholder="Enter your prompt here..."></textarea>
+          </div>
+
+          <div class="editors">
+            <div class="editor-block">
+              <label>Headers <span class="hint">(JSON)</span></label>
+              <textarea id="field-headers" rows="8" spellcheck="false"></textarea>
+            </div>
+            <div class="editor-block" id="body-editor-block">
+              <label>Body <span class="hint">(JSON — prompt/input injected from above)</span></label>
+              <textarea id="field-body" rows="8" spellcheck="false"></textarea>
+            </div>
+            <div class="editor-block hidden" id="params-block">
+              <label>Query Params</label>
+              <div id="params-list"></div>
+              <button class="btn-add-param" id="btn-add-param">+ Add param</button>
+            </div>
+          </div>
+
+          <!-- Multi-region URLs block -->
+          <div class="urls-block hidden" id="urls-block">
+            <label>Regional URLs <span class="hint">(one per line: label|url)</span></label>
+            <textarea id="field-urls" rows="6" spellcheck="false" placeholder="sg|https://api-sg.example.com/endpoint&#10;us|https://api-us.example.com/endpoint&#10;eu|https://api-eu.example.com/endpoint"></textarea>
+          </div>
+
+          <!-- Response -->
+          <div class="response-block hidden" id="response-block">
+            <div class="response-meta" id="response-meta"></div>
+            <div id="response-smart"></div>
+            <pre class="response-body" id="response-body"></pre>
+          </div>
+
+          <!-- History -->
+          <div class="history-block">
+            <h3>History</h3>
+            <ul class="history-list" id="history-list"></ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- Posts view -->
+      <section id="posts-view" class="hidden">
+        <!-- Search Results View -->
+        <div class="search-results hidden" id="search-results">
+          <div class="search-results-header">
+            <button class="btn-icon" id="btn-close-search" title="Close search">&times;</button>
+            <h2>Search Results</h2>
+          </div>
+          <div class="search-sources" id="search-sources"></div>
+          <div class="search-answer" id="search-answer"></div>
+        </div>
+        <!-- Posts Settings -->
+        <div class="posts-settings hidden" id="posts-settings">
+          <h2>Posts Settings</h2>
+          <div class="settings-block">
+            <label>Summary Prompt</label>
+            <textarea id="field-posts-prompt" rows="4" placeholder="Enter prompt to generate article summaries..."></textarea>
+            <p class="hint">This prompt is used to generate bilingual summaries for all posts.</p>
+          </div>
+          <div class="settings-block">
+            <label>Showcase Base Prompt</label>
+            <textarea id="field-showcase-prompt" rows="3" placeholder="Base prompt for showcase images..."></textarea>
+            <p class="hint">Used as a rough creative direction. An LLM expands it into a full cinematic image prompt at high temperature before each generation.</p>
+          </div>
+          <div class="settings-block">
+            <label>Summary Language</label>
+            <div class="lang-toggle">
+              <button class="lang-btn active" data-lang="en">EN</button>
+              <button class="lang-btn" data-lang="zh">ZH</button>
+              <button class="lang-btn" data-lang="both">Both</button>
+            </div>
+          </div>
+          <div class="settings-block">
+            <label>Color Palette</label>
+            <div class="palette-picker" id="palette-picker"></div>
+            <div class="custom-palette-section">
+              <div class="custom-color-row">
+                <label class="custom-color-label">Custom Accent</label>
+                <input type="color" id="custom-accent-picker" class="color-picker-input" />
+              </div>
+              <div class="custom-palette-history" id="custom-palette-history"></div>
+            </div>
+          </div>
+          <div class="settings-block">
+            <label>Regenerate Summary</label>
+            <p class="hint">Regenerate summaries for all saved posts using the prompt above.</p>
+            <button class="btn btn-save" id="btn-regen-summary" style="align-self: flex-start;">Regen Summary</button>
+          </div>
+          <div class="settings-actions">
+            <button class="btn btn-save" id="btn-save-settings">Save Settings</button>
+          </div>
+        </div>
+
+        <!-- Gallery -->
+        <div class="gallery-view hidden" id="gallery-view">
+          <h2>Gallery</h2>
+          <p class="gallery-hint">Liked showcase images appear here. Click to set as current showcase.</p>
+          <div class="gallery-grid" id="gallery-grid"></div>
+        </div>
+
+        <!-- Posts Empty State -->
+        <div class="posts-empty" id="posts-empty">
+          <p>No saved posts yet. Use the browser extension to save X posts.</p>
+        </div>
+
+        <!-- Post Reader with two-column layout -->
+        <div class="post-reader hidden" id="post-reader">
+          <div class="post-reader-main">
+            <!-- Title & Cover Section -->
+            <div class="post-title-cover" id="post-title-cover"></div>
+
+            <!-- Divider -->
+            <div class="post-divider"></div>
+
+            <!-- AI Summary Block -->
+            <div class="post-summary-block" id="post-summary-block">
+              <div class="summary-loading hidden" id="summary-loading">
+                <div class="summary-spinner"></div>
+                <span>Generating summary...</span>
+              </div>
+              <div class="summary-content hidden" id="summary-content"></div>
+              <button class="btn btn-summary-gen hidden" id="btn-generate-summary">Generate Summary</button>
+            </div>
+
+            <!-- Divider -->
+            <div class="post-divider"></div>
+
+            <!-- Post Content -->
+            <div class="post-reader-content" id="post-reader-content"></div>
+          </div>
+
+          <!-- Image Showcase Column -->
+          <div class="post-showcase-column" id="post-showcase-column">
+            <div class="showcase-image-wrapper">
+              <img class="showcase-image" id="showcase-image" src="" alt="Showcase" />
+              <div class="showcase-fade-overlay"></div>
+              <div class="showcase-prompt-display" id="showcase-prompt-display"></div>
+              <div class="showcase-actions">
+                <button class="showcase-btn" id="btn-like-showcase" title="Like">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+                  </svg>
+                </button>
+                <button class="showcase-btn" id="btn-regen-showcase" title="Regenerate"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Logger view -->
+      <section id="logger-view" class="hidden"></section>
+    </main>
+  </div>
+
+  <!-- Import from curl dialog -->
+  <dialog id="import-dialog">
+    <div class="dialog-card">
+      <h3>Import from curl</h3>
+      <textarea id="import-curl-input" rows="10" spellcheck="false" placeholder="Paste your curl command here...&#10;&#10;curl -X POST https://api.example.com/endpoint \&#10;  -H 'Authorization: Bearer $TOKEN' \&#10;  -H 'Content-Type: application/json' \&#10;  -d '{&quot;key&quot;: &quot;value&quot;}'"></textarea>
+      <div class="dialog-actions">
+        <button class="btn btn-save" id="btn-import-confirm">Import</button>
+        <button class="btn btn-delete" id="btn-import-cancel">Cancel</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
