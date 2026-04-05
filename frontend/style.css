@@ -1909,10 +1909,12 @@ dialog::backdrop {
 
 /* Max-width reading constraint + base typography */
 .logger-body {
-  max-width: 120ch;
+  max-width: 80ch;
   font-size: 15px;
   line-height: 1.7;
   color: var(--text);
+  word-break: break-word;
+  overflow-wrap: break-word;
 }
 
 /* h2 — section headers with left accent bar */
@@ -2032,7 +2034,9 @@ dialog::backdrop {
   line-height: 1.6;
   color: var(--text);
   white-space: pre-wrap;
-  word-break: break-all;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  max-width: 80ch;
   margin: 0;
   background: none;
   border: none;
