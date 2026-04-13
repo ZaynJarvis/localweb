@@ -145,8 +145,8 @@ function renderPostReader(post) {
       contentMd = lines.join('\n');
     }
   }
-  // Strip first image used as cover
-  contentMd = contentMd.replace(/!\[.*?\]\([^)]+\)/, '');
+  // Strip first image (linked or not) used as cover
+  contentMd = contentMd.replace(/(?:\[?!\[.*?\]\([^)]+\)\]\([^)]+\)|!\[.*?\]\([^)]+\))/, '');
   $('post-reader-content').innerHTML = mdToHtml(contentMd.trim());
 
   // Showcase column
@@ -172,9 +172,9 @@ function renderTitleCover(post) {
     html += `<h1 class="post-title">${escHtml(title)}</h1>`;
   }
 
-  // Cover image
-  const imgMatch = content.match(/!\[.*?\]\(([^)]+)\)/);
-  const coverUrl = imgMatch ? imgMatch[1] : '';
+  // Cover image — handle both plain images and linked images
+  const imgMatch = content.match(/(?:\[?!\[.*?\]\(([^)]+)\)\]\([^)]+\)|!\[.*?\]\(([^)]+)\))/);
+  const coverUrl = imgMatch ? (imgMatch[1] || imgMatch[2]) : '';
   if (coverUrl) {
     html += `<img class="post-cover-img" src="${escHtml(coverUrl)}" alt="" />`;
   }
@@ -216,8 +216,9 @@ function renderPostCards() {
     const content = post.content_markdown || '';
     const displayTitle = post.title || content.replace(/!\[.*?\]\(.*?\)/g, '').replace(/@\w+/g, '').slice(0, 60).trim() || 'No content';
 
-    const imgMatch = content.match(/!\[.*?\]\(([^)]+)\)/);
-    const coverUrl = imgMatch ? imgMatch[1] : '';
+    // Handle both plain images and linked images
+    const imgMatch = content.match(/(?:\[?!\[.*?\]\(([^)]+)\)\]\([^)]+\)|!\[.*?\]\(([^)]+)\))/);
+    const coverUrl = imgMatch ? (imgMatch[1] || imgMatch[2]) : '';
 
     const coverHtml = coverUrl
       ? `<div class="post-card-cover"><img src="${escHtml(coverUrl)}" alt="" loading="lazy" /></div>`
