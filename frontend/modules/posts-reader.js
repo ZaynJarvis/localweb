@@ -155,7 +155,6 @@ function renderPostReader(post) {
 
 function renderTitleCover(post) {
   let title = '';
-  let coverUrl = '';
   const content = post.content_markdown || '';
 
   const headingMatch = content.match(/^#\s+(.+)$/m);
@@ -168,17 +167,16 @@ function renderTitleCover(post) {
     }
   }
 
-  const imgMatch = content.match(/!\[.*?\]\(([^)]+)\)/);
-  if (imgMatch) {
-    coverUrl = imgMatch[1];
-  }
-
   let html = '';
   if (title) {
     html += `<h1 class="post-title">${escHtml(title)}</h1>`;
   }
+
+  // Cover image
+  const imgMatch = content.match(/!\[.*?\]\(([^)]+)\)/);
+  const coverUrl = imgMatch ? imgMatch[1] : '';
   if (coverUrl) {
-    html += `<img class="post-cover-img" src="${escHtml(coverUrl)}" alt="Cover" />`;
+    html += `<img class="post-cover-img" src="${escHtml(coverUrl)}" alt="" />`;
   }
 
   const avatarUrl = post.author_avatar_url || '';
