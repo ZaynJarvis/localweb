@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+from services.post_service import _find_chat_api, _call_chat_api
 
 TERMINAL_LOGGER_DIR = Path.home() / ".tmux-journal"      # data directory
 TERMINAL_LOGGER_SRC = Path.home() / "code" / "tmux-journal"  # source/scripts directory
@@ -366,3 +369,165 @@ async def consolidate_entities():
         raise HTTPException(500, f"Consolidation failed: {err_text}")
 
     return await get_entities()
+
+
+# --- Comment endpoints ---
+
+
+class CommentCreate(BaseModel):
+    content: str
+    context_type: str = "general"  # overview | session | topic | entity | pane | general
+    context_id: str | None = None   # slug, pane name, etc.
+    selected_text: str | None = None
+
+
+@router.post("/api/logger/comments")
+async def create_comment(body: CommentCreate):
+    import db
+    comment_id = await db.create_logger_comment(
+        content=body.content,
+        context_type=body.context_type,
+        context_id=body.context_id,
+        selected_text=body.selected_text,
+    )
+    # Auto-trigger preference extraction in background
+    asyncio.create_task(_ingest_preferences(comment_id, body))
+    return {"id": comment_id}
+
+
+@router.get("/api/logger/comments")
+async def list_comments(context_type: str = None, context_id: str = None, limit: int = 100):
+    import db
+    comments = await db.get_logger_comments(context_type, context_id, limit)
+    return {"comments": comments}
+
+
+@router.delete("/api/logger/comments/{comment_id}")
+async def delete_comment(comment_id: int):
+    import db
+    await db.delete_logger_comment(comment_id)
+    return {"ok": True}
+
+
+# --- Preference ingestion ---
+
+
+def _get_page_content(context_type: str, context_id: str | None) -> str:
+    """Read the brief/page content for a given context."""
+    if context_type == "overview" and OVERVIEW_MD.exists():
+        return OVERVIEW_MD.read_text(errors="replace")[:3000]
+    if context_type == "session" and SUMMARY_LOG.exists():
+        return SUMMARY_LOG.read_text(errors="replace")[:3000]
+    if context_type == "topic" and context_id:
+        f = MEMORY_DIR / f"topic_{context_id}.md"
+        if f.exists():
+            return f.read_text(errors="replace")[:3000]
+    if context_type == "entity" and context_id:
+        f = MEMORY_DIR / f"entity_{context_id}.md"
+        if f.exists():
+            return f.read_text(errors="replace")[:3000]
+    return ""
+
+
+async def _ingest_preferences(comment_id: int, body: CommentCreate):
+    """Extract user preferences from a comment via LLM and store them."""
+    import db
+
+    page_content = _get_page_content(body.context_type, body.context_id)
+    existing_prefs = await db.get_user_preferences(limit=50)
+    existing_summary = "\n".join(
+        f"- [{p['category']}] {p['content']}" for p in existing_prefs[:20]
+    ) or "（暂无已有偏好）"
+
+    prompt = f"""你是一个用户偏好分析助手。根据用户在终端日志页面上留下的评论，提取可复用的偏好信号。
+
+用户评论: "{body.content}"
+{f'引用的文本: "{body.selected_text}"' if body.selected_text else ''}
+页面上下文类型: {body.context_type}
+页面内容摘要:
+{page_content[:2000]}
+
+已有偏好（避免重复）:
+{existing_summary}
+
+请提取0-3条偏好信号。每条包含:
+- category: 必须是以下之一: tool_preference, workflow_pattern, interest_area, opinion, communication_style
+- preference: 用简洁中文描述这条偏好（一句话）
+- confidence: 0.0-1.0 的置信度（明确表达的偏好=0.8+，隐含的=0.3-0.6）
+- reasoning: 为什么你认为这是一条偏好（一句话）
+
+如果评论不包含任何偏好信号（如纯事实性评论），返回空数组。
+
+只返回 JSON 数组，不要其他内容:
+[{{"category": "...", "preference": "...", "confidence": 0.8, "reasoning": "..."}}]"""
+
+    try:
+        apis = await db.get_all_apis()
+        chat_api = _find_chat_api(apis)
+        if not chat_api:
+            return
+
+        response = await _call_chat_api(chat_api, prompt, timeout=30, temperature=0.3)
+
+        # Parse the JSON array from the response
+        m = re.search(r'\[[\s\S]*\]', response)
+        if not m:
+            return
+        items = json.loads(m.group(0))
+        if not isinstance(items, list):
+            return
+
+        valid_categories = {"tool_preference", "workflow_pattern", "interest_area", "opinion", "communication_style"}
+        for item in items:
+            cat = item.get("category", "")
+            pref = item.get("preference", "")
+            conf = item.get("confidence", 0.5)
+            if cat in valid_categories and pref:
+                await db.create_user_preference(
+                    category=cat,
+                    content=pref,
+                    source_comment_id=comment_id,
+                    confidence=float(conf),
+                )
+    except Exception as e:
+        print(f"[preference-ingest] error for comment {comment_id}: {e}")
+
+
+@router.post("/api/logger/comments/{comment_id}/ingest")
+async def ingest_comment(comment_id: int):
+    """Manually trigger preference extraction for a comment. Returns learned items."""
+    import db
+
+    comments = await db.get_logger_comments()
+    comment = next((c for c in comments if c["id"] == comment_id), None)
+    if not comment:
+        raise HTTPException(404, "Comment not found")
+
+    body = CommentCreate(
+        content=comment["content"],
+        context_type=comment["context_type"],
+        context_id=comment.get("context_id"),
+        selected_text=comment.get("selected_text"),
+    )
+    await _ingest_preferences(comment_id, body)
+
+    prefs = await db.get_preferences_by_comment(comment_id)
+    return {"learned": prefs}
+
+
+@router.get("/api/logger/preferences")
+async def list_preferences(category: str = None, comment_id: int = None, limit: int = 100):
+    """List user preferences, optionally filtered by category or source comment."""
+    import db
+    if comment_id:
+        prefs = await db.get_preferences_by_comment(comment_id)
+        return {"preferences": prefs}
+    prefs = await db.get_user_preferences(category=category, limit=limit)
+    return {"preferences": prefs}
+
+
+@router.delete("/api/logger/preferences/{pref_id}")
+async def delete_preference(pref_id: int):
+    import db
+    await db.delete_user_preference(pref_id)
+    return {"ok": True}

@@ -3,6 +3,7 @@ from pathlib import Path
 FRONTEND_DIR = Path(__file__).parent / "frontend"
 POST_IMAGES_DIR = Path(__file__).parent / "post_images"
 GALLERY_DIR = Path(__file__).parent / "gallery"
+OV_STAGING_DIR = Path(__file__).parent / "ov_staging"
 
 # Default settings
 DEFAULT_POSTS_PROMPT = """You are an expert analyst. Produce a bilingual structured summary using the Feynman Method — designed for maximum knowledge retention and behavior change.
@@ -31,5 +32,5 @@ Rules:
 - If content is too shallow for a section, write "N/A"."""
 DEFAULT_SHOWCASE_PROMPT = "cinematic dark aesthetic, abstract mood"
 DEFAULT_POSTS_LANGUAGE = "en"
-DEFAULT_COLOR_PALETTE = "default"
+DEFAULT_COLOR_PALETTE = "brutalist"
 DEFAULT_CUSTOM_COLORS = "[]"

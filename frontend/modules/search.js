@@ -2,7 +2,15 @@ import { state } from './state.js';
 import { $, escHtml, mdToHtml } from './utils.js';
 import { openPostReader } from './posts-reader.js';
 
-let searchAbortController = null;
+const DEBOUNCE_MS = 300;
+const THRESHOLD = 0.35;
+const CHUNK_PREVIEW_LEN = 360;
+const SEARCH_BUILD = 'ov-find-v2';
+
+console.log(`[search] module loaded (${SEARCH_BUILD})`);
+
+let debounceTimer = null;
+let findAbortController = null;
 
 export function renderSearchBar() {
   return `
@@ -12,139 +20,153 @@ export function renderSearchBar() {
           <circle cx="11" cy="11" r="8"></circle>
           <path d="M21 21l-4.35-4.35"></path>
         </svg>
-        <input type="text" class="search-input" id="search-input" placeholder="Search your knowledge..." />
+        <input type="text" class="search-input" id="search-input" placeholder="Search your knowledge..." autocomplete="off" />
         <div class="search-spinner hidden" id="search-spinner"></div>
       </div>
-      <div class="search-results hidden" id="search-results"></div>
     </div>
+    <div class="search-results hidden" id="search-results"></div>
   `;
 }
 
 export function initSearchListeners() {
   const input = $('search-input');
-  if (!input) return;
+  if (!input) {
+    console.warn('[search] #search-input not found when binding listeners');
+    return;
+  }
+  if (input.dataset.ovBound === '1') return; // idempotent
+  input.dataset.ovBound = '1';
+  console.log('[search] listeners bound to input');
+  input.addEventListener('input', () => {
+    const q = input.value.trim();
+    if (debounceTimer) clearTimeout(debounceTimer);
+    if (!q) {
+      hideResults();
+      return;
+    }
+    debounceTimer = setTimeout(() => runFind(q), DEBOUNCE_MS);
+  });
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      const query = input.value.trim();
-      if (query) handleSearch(query);
+    if (e.key === 'Escape') {
+      input.value = '';
+      hideResults();
     }
   });
 }
 
-async function handleSearch(query) {
+function hideResults() {
+  const resultsDiv = $('search-results');
+  const spinner = $('search-spinner');
+  if (spinner) spinner.classList.add('hidden');
+  if (resultsDiv) {
+    resultsDiv.innerHTML = '';
+    resultsDiv.classList.add('hidden');
+  }
+  document.querySelector('.posts-empty')?.classList.remove('searching');
+  if (findAbortController) {
+    findAbortController.abort();
+    findAbortController = null;
+  }
+}
+
+async function runFind(query) {
+  console.log('[search] runFind:', query);
   const spinner = $('search-spinner');
   const resultsDiv = $('search-results');
-  if (!spinner || !resultsDiv) return;
-
-  // Cancel previous search
-  if (searchAbortController) {
-    searchAbortController.abort();
+  if (!resultsDiv) {
+    console.warn('[search] #search-results not found; is the DOM torn down?');
+    return;
   }
-  searchAbortController = new AbortController();
 
-  spinner.classList.remove('hidden');
+  if (findAbortController) findAbortController.abort();
+  findAbortController = new AbortController();
+
+  if (spinner) spinner.classList.remove('hidden');
   resultsDiv.classList.remove('hidden');
-  resultsDiv.innerHTML = `
-    <div class="search-answer-card">
-      <div class="search-answer-header">Answer</div>
-      <div class="search-answer-body" id="search-answer-body"></div>
-    </div>
-    <div class="search-sources hidden" id="search-sources">
-      <div class="search-sources-header">Relevant Posts</div>
-      <div class="search-sources-grid" id="search-sources-grid"></div>
-    </div>
-  `;
-
-  let answerText = '';
-  const answerBody = $('search-answer-body');
-  answerBody.innerHTML = '<span class="search-cursor"></span>';
+  resultsDiv.innerHTML = `<div class="search-empty-card">Searching…</div>`;
+  document.querySelector('.posts-empty')?.classList.add('searching');
 
   try {
-    const resp = await fetch(`/api/posts/search?q=${encodeURIComponent(query)}`, {
-      signal: searchAbortController.signal,
-    });
-
-    const reader = resp.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let currentEvent = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop(); // keep incomplete line
-
-      for (const line of lines) {
-        if (line.startsWith('event: ')) {
-          currentEvent = line.slice(7).trim();
-          continue;
-        }
-        if (line.startsWith('data: ')) {
-          const dataStr = line.slice(6);
-          try {
-            const data = JSON.parse(dataStr);
-            if (currentEvent === 'sources') {
-              renderSources(data);
-            } else if (currentEvent === 'token') {
-              answerText += data;
-              answerBody.innerHTML = mdToHtml(answerText) + '<span class="search-cursor"></span>';
-            } else if (currentEvent === 'error') {
-              answerText += `\n\nError: ${data.error || 'Unknown error'}`;
-              answerBody.innerHTML = mdToHtml(answerText);
-            } else if (currentEvent === 'done') {
-              // stream complete
-            }
-          } catch {
-            // ignore
-          }
-          currentEvent = '';
-          continue;
-        }
-      }
-    }
-
-    // Final render without cursor
-    answerBody.innerHTML = mdToHtml(answerText) || '<span class="search-empty">No answer generated.</span>';
+    const resp = await fetch(
+      `/api/posts/find?q=${encodeURIComponent(query)}&threshold=${THRESHOLD}`,
+      { signal: findAbortController.signal },
+    );
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    console.log('[search] items:', (data.items || []).length);
+    renderCards(data.items || []);
   } catch (e) {
-    if (e.name !== 'AbortError') {
-      answerBody.innerHTML = `<span class="search-empty">Search failed: ${escHtml(e.message)}</span>`;
-    }
+    if (e.name === 'AbortError') return;
+    console.error('[search] error:', e);
+    resultsDiv.innerHTML = `<div class="search-empty-card">Search failed: ${escHtml(e.message)}</div>`;
   } finally {
-    spinner.classList.add('hidden');
+    if (spinner) spinner.classList.add('hidden');
   }
 }
 
-function renderSources(sources) {
-  if (!sources || sources.length === 0) return;
-  const container = $('search-sources');
-  const grid = $('search-sources-grid');
-  if (!container || !grid) return;
+function truncate(text, n) {
+  if (!text) return '';
+  const clean = String(text).replace(/\s+/g, ' ').trim();
+  return clean.length > n ? clean.slice(0, n - 1).trimEnd() + '…' : clean;
+}
 
-  container.classList.remove('hidden');
+function renderCards(items) {
+  const resultsDiv = $('search-results');
+  if (!resultsDiv) return;
 
-  grid.innerHTML = sources.map(src => {
-    const coverHtml = src.cover_url
-      ? `<div class="search-card-cover"><img src="${escHtml(src.cover_url)}" alt="" loading="lazy" /></div>`
-      : `<div class="search-card-cover search-card-cover-ph"></div>`;
+  if (!items.length) {
+    resultsDiv.innerHTML = `<div class="search-empty-card">No matches above threshold ${THRESHOLD}.</div>`;
+    return;
+  }
 
-    return `<div class="search-card" data-search-post-id="${src.id}">
-      ${coverHtml}
-      <div class="search-card-body">
-        <div class="search-card-title">${escHtml(src.title)}</div>
-        <div class="search-card-author">${escHtml(src.author_name)}</div>
-      </div>
-    </div>`;
-  }).join('');
+  resultsDiv.innerHTML = `<div class="glass-grid">${items.map(renderCard).join('')}</div>`;
 
-  grid.querySelectorAll('.search-card').forEach(card => {
+  resultsDiv.querySelectorAll('.glass-card[data-post-id]').forEach(card => {
     card.addEventListener('click', () => {
-      const postId = parseInt(card.dataset.searchPostId, 10);
+      const postId = parseInt(card.dataset.postId, 10);
       const post = state.posts.find(p => p.id === postId);
-      if (post) openPostReader(post);
+      if (post) {
+        location.hash = `#posts/${postId}`;
+        openPostReader(post);
+      }
     });
   });
+}
+
+function renderCard(item) {
+  const scoreBadge = `<span class="glass-score">${(item.score * 100).toFixed(0)}%</span>`;
+  if (item.type === 'post') {
+    const cover = item.cover_url
+      ? `<div class="glass-cover"><img src="${escHtml(item.cover_url)}" alt="" loading="lazy" /></div>`
+      : '';
+    const chunk = truncate(item.chunk, CHUNK_PREVIEW_LEN);
+    return `
+      <div class="glass-card glass-card-post" data-post-id="${item.id}">
+        ${cover}
+        <div class="glass-body">
+          <div class="glass-header">
+            <span class="glass-badge glass-badge-post">Post</span>
+            ${scoreBadge}
+          </div>
+          <h3 class="glass-title">${escHtml(item.title)}</h3>
+          <div class="glass-meta">${escHtml(item.author_name || '')}</div>
+          ${chunk ? `<div class="glass-chunk">${escHtml(chunk)}</div>` : ''}
+          <a class="glass-link" href="#posts/${item.id}" onclick="event.stopPropagation()">Open post →</a>
+        </div>
+      </div>
+    `;
+  }
+  // memory
+  const content = truncate(item.content, CHUNK_PREVIEW_LEN + 200);
+  return `
+    <div class="glass-card glass-card-memory">
+      <div class="glass-body">
+        <div class="glass-header">
+          <span class="glass-badge glass-badge-memory">Memory</span>
+          ${scoreBadge}
+        </div>
+        <div class="glass-memory-body">${mdToHtml(content) || escHtml(content)}</div>
+      </div>
+    </div>
+  `;
 }

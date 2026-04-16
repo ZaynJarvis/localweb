@@ -7,6 +7,7 @@ export const state = {
   currentPost: null,
   activeView: 'apis',
   postsSubView: 'list', // 'list', 'settings', 'gallery'
+  postsCardMode: 'full', // 'full' (with title/desc, 16:9) or 'compact' (image only, 1:1)
   // Settings
   postsSettings: {},
   // Showcase

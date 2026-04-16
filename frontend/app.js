@@ -1,5 +1,5 @@
 import { state, loadSelected } from './modules/state.js';
-import { $ } from './modules/utils.js';
+import { $, showToast } from './modules/utils.js';
 import { fetchAPIs, fetchPosts, fetchPostsSettings, fetchShowcase } from './modules/api-client.js';
 import {
   renderSidebar, renderPanel, selectAPI, newAPI,
@@ -16,6 +16,7 @@ import { generateSummary } from './modules/summary.js';
 import { likeShowcaseImage, regenerateShowcase } from './modules/showcase.js';
 import { saveCurrentSettings, regenSummary, applyPalette } from './modules/settings.js';
 import { renderLoggerView } from './modules/logger.js';
+import { renderEmailView } from './modules/email.js';
 
 // --- Navigation / View switching ---
 function switchView(view) {
@@ -25,18 +26,25 @@ function switchView(view) {
   $('tab-apis').classList.toggle('active', view === 'apis');
   $('tab-posts').classList.toggle('active', view === 'posts');
   $('tab-logger').classList.toggle('active', view === 'logger');
+  $('tab-email').classList.toggle('active', view === 'email');
 
   // Update sidebar content
   $('api-list').classList.toggle('hidden', view !== 'apis');
   $('posts-sidebar-list').classList.toggle('hidden', view !== 'posts');
   $('logger-sidebar-list').classList.toggle('hidden', view !== 'logger');
-  $('sidebar-btns-apis').classList.toggle('hidden', view !== 'apis');
-  $('sidebar-btns-posts').classList.toggle('hidden', view !== 'posts');
+  $('email-sidebar-list').classList.toggle('hidden', view !== 'email');
+  $('sidebar-utils-apis').classList.toggle('hidden', view !== 'apis');
+  $('sidebar-utils-posts').classList.toggle('hidden', view !== 'posts');
+  $('sidebar-utils-logger').classList.toggle('hidden', view !== 'logger');
+  $('sidebar-utils-email').classList.toggle('hidden', view !== 'email');
+  const title = $('sidebar-title');
+  if (title) title.textContent = { apis: 'APIs', posts: 'Posts', logger: 'Logger', email: 'Email' }[view] || view;
 
   // Update main content
   $('apis-view').classList.toggle('hidden', view !== 'apis');
   $('posts-view').classList.toggle('hidden', view !== 'posts');
   $('logger-view').classList.toggle('hidden', view !== 'logger');
+  $('email-view').classList.toggle('hidden', view !== 'email');
 
   // Toggle view-specific classes on main and sidebar
   $('main').classList.toggle('posts-active', view === 'posts');
@@ -51,6 +59,9 @@ function switchView(view) {
   if (view === 'logger') {
     renderLoggerView();
   }
+  if (view === 'email') {
+    renderEmailView();
+  }
 
   // Update hash without triggering hashchange
   if (view === 'posts') {
@@ -60,6 +71,10 @@ function switchView(view) {
   } else if (view === 'logger') {
     if (location.hash !== '#logger') {
       history.replaceState(null, '', '#logger');
+    }
+  } else if (view === 'email') {
+    if (location.hash !== '#email') {
+      history.replaceState(null, '', '#email');
     }
   } else {
     if (location.hash !== '#apis') {
@@ -81,6 +96,49 @@ $('btn-add-param').onclick = () => addParamRow();
 // Posts settings
 $('btn-posts-settings').onclick = openPostsSettings;
 $('btn-gallery').onclick = openGallery;
+$('btn-card-mode').onclick = () => {
+  state.postsCardMode = state.postsCardMode === 'compact' ? 'full' : 'compact';
+  renderPostsView();
+};
+
+// APIs settings (placeholder for now)
+$('btn-apis-settings').onclick = () => {
+  showToast('APIs settings coming soon');
+};
+
+// Logger sidebar util
+const btnLoggerRefresh = document.getElementById('btn-logger-refresh');
+if (btnLoggerRefresh) {
+  btnLoggerRefresh.onclick = () => {
+    if (typeof renderLoggerView === 'function') renderLoggerView();
+    showToast('Logger refreshed');
+  };
+}
+
+// Email sidebar utils
+const btnEmailRun = document.getElementById('btn-email-run');
+if (btnEmailRun) {
+  btnEmailRun.onclick = async () => {
+    btnEmailRun.disabled = true;
+    const orig = btnEmailRun.innerHTML;
+    btnEmailRun.innerHTML = '⏳';
+    try {
+      const r = await fetch('/api/email/run', { method: 'POST' });
+      const j = await r.json();
+      showToast(j.ok ? 'Triage run complete' : `Run failed (${j.exit_code})`);
+      renderEmailView();
+    } catch (e) {
+      showToast('Run error: ' + e.message);
+    } finally {
+      btnEmailRun.disabled = false;
+      btnEmailRun.innerHTML = orig;
+    }
+  };
+}
+const btnEmailSettings = document.getElementById('btn-email-settings');
+if (btnEmailSettings) {
+  btnEmailSettings.onclick = () => showToast('Email settings coming soon');
+}
 $('btn-save-settings').onclick = saveCurrentSettings;
 $('btn-generate-summary').onclick = generateSummary;
 $('btn-regen-summary').onclick = regenSummary;
@@ -96,9 +154,41 @@ document.querySelectorAll('.lang-btn').forEach(btn => {
 });
 
 // Nav tabs
-$('tab-apis').onclick = () => switchView('apis');
-$('tab-posts').onclick = () => switchView('posts');
+$('tab-apis').onclick = () => {
+  switchView('apis');
+  state.current = null;
+  renderSidebar();
+  renderPanel();
+  history.replaceState(null, '', '#apis');
+};
+$('tab-posts').onclick = () => {
+  switchView('posts');
+  // Always go to posts main page (all posts cards)
+  state.currentPost = null;
+  state.postsSubView = 'list';
+  history.replaceState(null, '', '#posts');
+  renderPostsSidebar();
+  renderPostsView();
+};
+
+// Sidebar title is clickable — returns to the root of the currently active section
+const sidebarTitleEl = $('sidebar-title');
+if (sidebarTitleEl) {
+  sidebarTitleEl.style.cursor = 'pointer';
+  sidebarTitleEl.onclick = () => {
+    if (state.activeView === 'posts') {
+      $('tab-posts').onclick();
+    } else if (state.activeView === 'apis') {
+      $('tab-apis').onclick();
+    } else if (state.activeView === 'logger') {
+      $('tab-logger').onclick();
+    } else if (state.activeView === 'email') {
+      $('tab-email').onclick();
+    }
+  };
+}
 $('tab-logger').onclick = () => switchView('logger');
+$('tab-email').onclick = () => switchView('email');
 
 $('field-method').addEventListener('change', e => {
   updateParamsBodyVisibility(e.target.value);
@@ -153,6 +243,8 @@ window.addEventListener('hashchange', () => {
     }
   } else if (hash === 'logger') {
     switchView('logger');
+  } else if (hash === 'email') {
+    switchView('email');
   } else {
     switchView('apis');
   }
@@ -181,6 +273,8 @@ window.addEventListener('hashchange', () => {
     renderPostsView();
   } else if (hash === 'logger') {
     switchView('logger');
+  } else if (hash === 'email') {
+    switchView('email');
   } else {
     switchView('apis');
     const savedId = loadSelected();

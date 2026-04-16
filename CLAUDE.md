@@ -268,3 +268,5 @@ Logger    ← (standalone, no inbound deps)
 | Gallery | Showcase | Curated collection of liked images |
 | Topic | Logger | Terminal session event cluster |
 | Entity | Logger | Consolidated topic representation with insights |
+| Brief | Logger | Per-topic/entity detail content (the markdown rendered when you click a topic or entity). Sections ordered: Suggestions → Insights → Summary → rest |
+| Comment | Logger | User annotation on a brief, optionally quoting selected text. Stored in SQLite `logger_comments` with context_type + context_id |

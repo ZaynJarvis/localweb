@@ -4,6 +4,8 @@ import {
   fetchLoggerLogs, fetchLoggerLog,
   fetchLoggerMemory, fetchLoggerMemoryTopic, fetchLoggerMemoryRefresh,
   fetchLoggerEntities, fetchLoggerEntity, fetchLoggerConsolidate,
+  fetchLoggerComments, createLoggerComment, deleteLoggerComment,
+  fetchLoggerPreferences, deleteLoggerPreference,
 } from './api-client.js';
 
 const CATEGORY_EMOJI = {
@@ -48,15 +50,392 @@ function categoryEmoji(category) {
   return CATEGORY_EMOJI[category] || '📄';
 }
 
+/** Priority order for h2 sections in briefs — higher priority = shown first */
+const SECTION_PRIORITY = ['Suggestions', 'Insights', 'Summary'];
+
+/**
+ * Reorder h2 sections in rendered HTML by priority.
+ * Sections in SECTION_PRIORITY appear first (in that order), then the rest in original order.
+ * The leading content before the first h2 (title/meta line) stays at the top.
+ */
+function reorderSections(html) {
+  // Split into: preamble (before first h2) + sections (h2 + content until next h2)
+  const parts = html.split(/(?=<h2>)/);
+  const preamble = parts[0] && !parts[0].startsWith('<h2>') ? parts.shift() : '';
+  if (parts.length <= 1) return html;
+
+  const sectionMap = new Map(); // heading text -> html chunk
+  const headings = []; // preserve original order
+  for (const part of parts) {
+    const m = part.match(/^<h2>(.*?)<\/h2>/);
+    const name = m ? m[1] : '';
+    sectionMap.set(name, part);
+    headings.push(name);
+  }
+
+  const ordered = [];
+  for (const pri of SECTION_PRIORITY) {
+    if (sectionMap.has(pri)) {
+      ordered.push(sectionMap.get(pri));
+      sectionMap.delete(pri);
+    }
+  }
+  // Append remaining in original order
+  for (const h of headings) {
+    if (sectionMap.has(h)) {
+      ordered.push(sectionMap.get(h));
+    }
+  }
+
+  return preamble + ordered.join('');
+}
+
 /** Current active view type for button logic */
 let currentView = 'overview'; // 'overview' | 'session' | 'topic' | 'entity' | 'pane'
+let currentContextType = 'overview';
+let currentContextId = null;
+let pendingQuote = null; // selected text waiting to be attached to a comment
+
+function setCommentContext(type, id) {
+  currentContextType = type;
+  currentContextId = id;
+  pendingQuote = null;
+  hideCompose();
+  hideFloatingBtn();
+  loadComments();
+}
+
+function getCommentContext() {
+  return { type: currentContextType, id: currentContextId };
+}
+
+// --- Floating comment button on text selection ---
+
+function setupFloatingBtn() {
+  const contentEl = $('logger-content');
+  if (!contentEl) return;
+
+  contentEl.addEventListener('mouseup', (e) => {
+    // Small delay so the selection finalizes
+    setTimeout(() => {
+      const sel = window.getSelection();
+      const text = sel ? sel.toString().trim() : '';
+      if (!text || text.length < 2) { hideFloatingBtn(); return; }
+
+      // Position the floating button near the end of the selection
+      const range = sel.getRangeAt(0);
+      const rect = range.getBoundingClientRect();
+      const btn = $('comment-floating-btn');
+      if (!btn) return;
+
+      btn.style.top = `${rect.top + window.scrollY - 36}px`;
+      btn.style.left = `${rect.right + window.scrollX + 4}px`;
+      btn.style.display = '';
+      btn._selectedText = text;
+    }, 10);
+  });
+
+  // Hide floating button on click outside or scroll
+  document.addEventListener('mousedown', (e) => {
+    const btn = $('comment-floating-btn');
+    if (btn && !btn.contains(e.target)) {
+      // Don't hide immediately — let mouseup on content fire first
+      setTimeout(() => {
+        const sel = window.getSelection();
+        if (!sel || !sel.toString().trim()) hideFloatingBtn();
+      }, 50);
+    }
+  });
+}
+
+function hideFloatingBtn() {
+  const btn = $('comment-floating-btn');
+  if (btn) btn.style.display = 'none';
+}
+
+function onFloatingBtnClick() {
+  const btn = $('comment-floating-btn');
+  pendingQuote = btn ? btn._selectedText : null;
+  window.getSelection().removeAllRanges();
+  hideFloatingBtn();
+  showCompose();
+}
+
+// --- Right-panel compose area ---
+
+function showCompose() {
+  const compose = $('comments-compose');
+  if (!compose) return;
+
+  const quoteEl = $('compose-quote');
+  if (quoteEl) {
+    if (pendingQuote) {
+      const truncated = pendingQuote.length > 200 ? pendingQuote.slice(0, 200) + '…' : pendingQuote;
+      quoteEl.textContent = truncated;
+      quoteEl.style.display = '';
+    } else {
+      quoteEl.textContent = '';
+      quoteEl.style.display = 'none';
+    }
+  }
+
+  compose.style.display = '';
+  // Ensure panel is visible
+  const layout = document.querySelector('.logger-layout');
+  if (layout) layout.classList.add('has-comments');
+
+  const input = $('comment-input');
+  if (input) { input.value = ''; input.focus(); }
+}
+
+function hideCompose() {
+  const compose = $('comments-compose');
+  if (compose) compose.style.display = 'none';
+  pendingQuote = null;
+  updatePanelVisibility();
+}
+
+function updatePanelVisibility() {
+  const layout = document.querySelector('.logger-layout');
+  if (!layout) return;
+  const list = $('comment-list');
+  const compose = $('comments-compose');
+  const prefsList = $('prefs-list');
+  const hasItems = list && list.querySelector('.comment-item');
+  const hasPrefs = prefsList && prefsList.querySelector('.pref-item');
+  const isComposing = compose && compose.style.display !== 'none';
+  layout.classList.toggle('has-comments', !!(hasItems || isComposing || hasPrefs));
+}
+
+async function submitComment() {
+  const input = $('comment-input');
+  if (!input) return;
+  const content = input.value.trim();
+  if (!content) return;
+
+  const ctx = getCommentContext();
+  const submitBtn = $('compose-submit');
+  if (submitBtn) submitBtn.disabled = true;
+  input.disabled = true;
+
+  try {
+    const result = await createLoggerComment(content, ctx.type, ctx.id, pendingQuote);
+    hideCompose();
+    await loadComments();
+    // Poll for learned preferences (background ingestion takes 2-4s)
+    if (result.id) pollForLearned(result.id);
+  } catch (e) {
+    showToast('Failed to save comment');
+  } finally {
+    if (submitBtn) submitBtn.disabled = false;
+    input.disabled = false;
+  }
+}
+
+function pollForLearned(commentId, attempts = 0) {
+  if (attempts > 3) return;
+  setTimeout(async () => {
+    try {
+      const data = await fetchLoggerPreferences(null, commentId);
+      const prefs = data.preferences || [];
+      if (prefs.length > 0) {
+        const labels = prefs.map(p => p.content).join('；');
+        showToast(`💡 learned: ${labels}`);
+        // Refresh preferences panel if visible
+        loadPreferencesPanel();
+        // Show learned badge on the comment card
+        showLearnedOnCard(commentId, prefs);
+      } else if (attempts < 3) {
+        pollForLearned(commentId, attempts + 1);
+      }
+    } catch { /* ignore */ }
+  }, attempts === 0 ? 3000 : 2000);
+}
+
+function showLearnedOnCard(commentId, prefs) {
+  const card = document.querySelector(`.comment-item[data-id="${commentId}"]`);
+  if (!card || card.querySelector('.comment-learned')) return;
+  const badge = document.createElement('div');
+  badge.className = 'comment-learned';
+  badge.textContent = `💡 ${prefs.map(p => p.content).join('；')}`;
+  card.appendChild(badge);
+}
+
+const PREF_CATEGORY_LABEL = {
+  tool_preference: '🔧 工具',
+  workflow_pattern: '🔄 工作流',
+  interest_area: '🎯 兴趣',
+  opinion: '💬 观点',
+  communication_style: '✍️ 风格',
+};
+
+async function loadPreferencesPanel() {
+  const container = $('prefs-list');
+  const countEl = $('prefs-panel-count');
+  if (!container) return;
+  try {
+    const data = await fetchLoggerPreferences();
+    const prefs = data.preferences || [];
+    if (countEl) countEl.textContent = prefs.length || '';
+    if (!prefs.length) {
+      container.innerHTML = '<div class="prefs-empty">暂无偏好记录</div>';
+      return;
+    }
+    container.innerHTML = prefs.map(p => {
+      const label = PREF_CATEGORY_LABEL[p.category] || p.category;
+      const conf = Math.round(p.confidence * 100);
+      return `
+        <div class="pref-item" data-id="${p.id}">
+          <div class="pref-category">${label} <span class="pref-conf">${conf}%</span></div>
+          <div class="pref-content">${escHtml(p.content)}</div>
+          <button class="pref-delete-btn" data-id="${p.id}" title="Delete">×</button>
+        </div>
+      `;
+    }).join('');
+    container.querySelectorAll('.pref-delete-btn').forEach(btn => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        await deleteLoggerPreference(parseInt(btn.dataset.id));
+        await loadPreferencesPanel();
+      };
+    });
+    // Make panel visible if prefs exist
+    updatePanelVisibility();
+  } catch {
+    container.innerHTML = '';
+  }
+}
+
+// --- Comments list in right panel ---
+
+async function loadComments() {
+  const container = $('comment-list');
+  if (!container) return;
+  const ctx = getCommentContext();
+  try {
+    const data = await fetchLoggerComments(ctx.type, ctx.id);
+    const comments = data.comments || [];
+    renderCommentList(container, comments);
+    // Update count badge
+    const countEl = $('comments-panel-count');
+    if (countEl) countEl.textContent = comments.length || '';
+    updatePanelVisibility();
+    applyHighlights(comments);
+  } catch {
+    container.innerHTML = '';
+    updatePanelVisibility();
+  }
+}
+
+async function renderCommentList(container, comments) {
+  if (!comments.length) {
+    container.innerHTML = '';
+    return;
+  }
+  // Oldest first (top-to-bottom reading order)
+  const sorted = [...comments].reverse();
+  container.innerHTML = sorted.map(c => {
+    const date = formatDate(c.created_at, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const quote = c.selected_text
+      ? `<div class="comment-quote">${escHtml(c.selected_text.length > 150 ? c.selected_text.slice(0, 150) + '…' : c.selected_text)}</div>`
+      : '';
+    return `
+      <div class="comment-item" data-id="${c.id}" data-quote="${escHtml(c.selected_text || '')}">
+        ${quote}
+        <div class="comment-body">${escHtml(c.content)}</div>
+        <div class="comment-meta">
+          <span class="comment-date">${date}</span>
+          <button class="comment-delete-btn" data-id="${c.id}" title="Delete">×</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // Wire delete buttons
+  container.querySelectorAll('.comment-delete-btn').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      await deleteLoggerComment(parseInt(btn.dataset.id));
+      await loadComments();
+    };
+  });
+
+  // Wire hover highlights
+  container.querySelectorAll('.comment-item').forEach(card => {
+    card.addEventListener('mouseenter', () => highlightQuoteInContent(card.dataset.quote, true));
+    card.addEventListener('mouseleave', () => highlightQuoteInContent(card.dataset.quote, false));
+  });
+
+  // Load learned badges for existing comments
+  for (const c of sorted) {
+    try {
+      const data = await fetchLoggerPreferences(null, c.id);
+      if (data.preferences && data.preferences.length > 0) {
+        showLearnedOnCard(c.id, data.preferences);
+      }
+    } catch { /* ignore */ }
+  }
+}
+
+// --- Content text highlights ---
+
+function applyHighlights(comments) {
+  const content = $('logger-content');
+  if (!content) return;
+  // Remove old highlight marks
+  content.querySelectorAll('mark.comment-highlight').forEach(m => {
+    const parent = m.parentNode;
+    parent.replaceChild(document.createTextNode(m.textContent), m);
+    parent.normalize();
+  });
+  // Apply persistent subtle highlights for all comments with quotes
+  const quotedComments = comments.filter(c => c.selected_text);
+  for (const c of quotedComments) {
+    highlightTextInDom(content, c.selected_text, c.id);
+  }
+}
+
+function highlightTextInDom(root, text, commentId) {
+  if (!text || text.length < 3) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodesToWrap = [];
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    const idx = node.textContent.indexOf(text);
+    if (idx !== -1) {
+      nodesToWrap.push({ node, idx, len: text.length, commentId });
+    }
+  }
+  // Wrap matches (process in reverse to avoid offset issues)
+  for (const { node, idx, len, commentId: cid } of nodesToWrap.reverse()) {
+    const range = document.createRange();
+    range.setStart(node, idx);
+    range.setEnd(node, idx + len);
+    const mark = document.createElement('mark');
+    mark.className = 'comment-highlight';
+    mark.dataset.commentId = cid;
+    range.surroundContents(mark);
+  }
+}
+
+function highlightQuoteInContent(quote, on) {
+  if (!quote) return;
+  const content = $('logger-content');
+  if (!content) return;
+  content.querySelectorAll('mark.comment-highlight').forEach(m => {
+    // Check if this mark's text matches the hovered quote
+    if (quote && m.textContent.includes(quote.slice(0, 50))) {
+      m.classList.toggle('comment-highlight-active', on);
+    }
+  });
+}
 
 export async function renderLoggerView() {
   const container = $('logger-view');
   const sidebarList = $('logger-sidebar-list');
   if (!container) return;
 
-  // Main content — no sidebar column here, it lives in the global sidebar
+  // Main content + right comment panel
   container.innerHTML = `
     <div class="logger-layout">
       <div class="logger-main" id="logger-main">
@@ -67,6 +446,31 @@ export async function renderLoggerView() {
         <div class="logger-content" id="logger-content">
           <div class="logger-loading">Loading overview…</div>
         </div>
+      </div>
+      <div class="logger-comments-panel" id="logger-comments-panel">
+        <div class="comments-panel-header">
+          <span class="comments-panel-title">Comments</span>
+          <span class="comments-panel-count" id="comments-panel-count"></span>
+        </div>
+        <div class="comments-panel-list" id="comment-list"></div>
+        <div class="comments-compose" id="comments-compose" style="display:none">
+          <div class="compose-quote" id="compose-quote" style="display:none"></div>
+          <textarea id="comment-input" placeholder="Add a comment…" rows="3"></textarea>
+          <div class="compose-actions">
+            <button class="btn compose-cancel" id="compose-cancel">Cancel</button>
+            <button class="btn compose-submit" id="compose-submit">Comment</button>
+          </div>
+        </div>
+        <div class="prefs-panel-section" id="prefs-panel-section">
+          <div class="comments-panel-header prefs-header" id="prefs-toggle">
+            <span class="comments-panel-title">Preferences</span>
+            <span class="comments-panel-count" id="prefs-panel-count"></span>
+          </div>
+          <div class="prefs-panel-list" id="prefs-list"></div>
+        </div>
+      </div>
+      <div class="comment-floating-btn" id="comment-floating-btn" style="display:none" title="Comment on selection">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2h12v9H5l-3 3V2z"/></svg>
       </div>
     </div>
   `;
@@ -157,10 +561,21 @@ export async function renderLoggerView() {
     }
   };
 
+  // Wire up comment panel
+  $('comment-floating-btn').onclick = onFloatingBtnClick;
+  $('compose-submit').onclick = submitComment;
+  $('compose-cancel').onclick = () => hideCompose();
+  $('comment-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitComment(); }
+    if (e.key === 'Escape') hideCompose();
+  });
+  setupFloatingBtn();
+
   // Overview nav item click (default)
   $('logger-nav-overview').onclick = () => {
     setActiveSidebarItem('overview');
     updateRegenButton('overview');
+    setCommentContext('overview', null);
     $('logger-content').innerHTML = '<div class="logger-loading">Loading overview…</div>';
     loadOverview();
   };
@@ -169,6 +584,7 @@ export async function renderLoggerView() {
   $('logger-nav-session').onclick = () => {
     setActiveSidebarItem('session');
     updateRegenButton('session');
+    setCommentContext('session', null);
     $('logger-content').innerHTML = '<div class="logger-loading">Loading summary…</div>';
     fetchLoggerSummary().then(renderSummaryContent).catch(() => {
       $('logger-content').innerHTML = '<div class="logger-empty">Failed to load summary.</div>';
@@ -193,6 +609,8 @@ export async function renderLoggerView() {
 
   // Render overview (default view)
   currentView = 'overview';
+  currentContextType = 'overview';
+  currentContextId = null;
   if (memoryResult.status === 'fulfilled') {
     renderOverviewContent(memoryResult.value);
     // Also render topic sidebar items from the same response
@@ -236,6 +654,10 @@ export async function renderLoggerView() {
   } else {
     logsContainer.innerHTML = '<div class="logger-sidebar-empty">No pane logs</div>';
   }
+
+  // Load initial comments and preferences
+  loadComments();
+  loadPreferencesPanel();
 }
 
 function setActiveSidebarItem(key) {
@@ -268,6 +690,13 @@ function renderTopicSidebar(topics) {
     container.innerHTML = '<div class="logger-sidebar-empty">No topics yet</div>';
     return;
   }
+
+  // Sort by updated_at descending (most recent first)
+  topics.sort((a, b) => {
+    const ta = a.updated_at || '';
+    const tb = b.updated_at || '';
+    return tb.localeCompare(ta);
+  });
 
   container.innerHTML = topics.map(t => `
     <div class="logger-sidebar-item" data-key="${escHtml(t.slug)}" id="logger-nav-topic-${escHtml(t.slug)}">
@@ -330,6 +759,7 @@ function renderOverviewContent(data) {
 async function loadTopic(slug) {
   setActiveSidebarItem(slug);
   updateRegenButton('topic');
+  setCommentContext('topic', slug);
   $('logger-content').innerHTML = '<div class="logger-loading">Loading topic…</div>';
   try {
     const data = await fetchLoggerMemoryTopic(slug);
@@ -359,7 +789,7 @@ function renderTopicContent(data) {
     : '';
 
   const body = data.content
-    ? `<div class="logger-body">${mdToHtml(data.content)}</div>`
+    ? `<div class="logger-body">${reorderSections(mdToHtml(data.content))}</div>`
     : '<div class="logger-empty">No content for this topic yet.</div>';
 
   content.innerHTML = `${metaBar}${body}`;
@@ -368,6 +798,7 @@ function renderTopicContent(data) {
 async function loadPaneLog(name) {
   setActiveSidebarItem(name);
   updateRegenButton('pane');
+  setCommentContext('pane', name);
   $('logger-content').innerHTML = '<div class="logger-loading">Loading…</div>';
   try {
     const data = await fetchLoggerLog(name);
@@ -453,6 +884,7 @@ async function loadSidebarEntities() {
 async function loadEntity(slug) {
   setActiveSidebarItem(`entity-${slug}`);
   updateRegenButton('entity');
+  setCommentContext('entity', slug);
   $('logger-content').innerHTML = '<div class="logger-loading">Loading entity…</div>';
   try {
     const data = await fetchLoggerEntity(slug);
@@ -481,10 +913,10 @@ function renderEntityContent(data) {
     ? `<div class="logger-topic-meta">${metaSegments.join('<span class="logger-topic-meta-sep">·</span>')}</div>`
     : '';
 
-  // Render the full markdown, but wrap Insights and Suggestions sections with special classes
-  let bodyHtml = data.content ? mdToHtml(data.content) : '<div class="logger-empty">No content yet.</div>';
+  // Reorder sections (Suggestions → Insights → Summary → rest), then wrap with special classes
+  let bodyHtml = data.content ? reorderSections(mdToHtml(data.content)) : '<div class="logger-empty">No content yet.</div>';
 
-  // Post-process: wrap h2 sections "Insights" and "Suggestions" with special div wrappers
+  // Post-process: wrap Insights and Suggestions with special div classes for styling
   bodyHtml = bodyHtml.replace(
     /<h2>Insights<\/h2>([\s\S]*?)(?=<h2>|$)/,
     '<div class="entity-insights-section"><h2>Insights</h2>$1</div>'

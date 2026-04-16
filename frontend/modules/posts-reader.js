@@ -7,6 +7,63 @@ import { renderPostsSettings } from './settings.js';
 import { renderGalleryView } from './gallery.js';
 import { renderSearchBar, initSearchListeners } from './search.js';
 
+const PRIORITY_TAGS = new Set(['must', 'skim', 'dump']);
+
+function renderTagChips(tags, extraClass = '') {
+  if (!tags || !tags.length) return '';
+  const sorted = [...tags].sort((a, b) => {
+    const aP = PRIORITY_TAGS.has(a) ? 0 : 1;
+    const bP = PRIORITY_TAGS.has(b) ? 0 : 1;
+    return aP - bP;
+  });
+  const chips = sorted.map(t => {
+    const cls = PRIORITY_TAGS.has(t) ? `tag-chip priority-${t}` : 'tag-chip';
+    return `<span class="${cls}" data-tag="${escHtml(t)}">${escHtml(t)}</span>`;
+  }).join('');
+  return `<div class="tag-row ${extraClass}">${chips}</div>`;
+}
+
+function attachTagClickHandlers(rootEl) {
+  if (!rootEl) return;
+  rootEl.querySelectorAll('.tag-chip[data-tag]').forEach(chip => {
+    chip.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const tag = chip.dataset.tag;
+      // TODO: wire to semantic search later
+      console.log('[tag clicked]', tag);
+    });
+  });
+}
+
+// --- Image URL extraction helpers ---
+
+// Extract the actual image URL from a markdown image construct (plain or linked)
+function extractImageUrl(mdImage) {
+  // Plain: ![alt](url)
+  const plain = mdImage.match(/!\[[^\]]*\]\(([^)]+)\)/);
+  if (plain) return plain[1];
+  return '';
+}
+
+// Find the first image in markdown content (handles linked images that may span lines)
+// Returns the match with the lowest index in the content
+function findFirstImage(content) {
+  const candidates = [];
+  // Multi-line linked image: [ \n ![alt](url) \n ](link)
+  let m = content.match(/(\[\s*!\[[^\]]*\]\([^)]+\)\s*\]\([^)]+\))/);
+  if (m) candidates.push({ fullMatch: m[0], imageUrl: extractImageUrl(m[0]), index: m.index });
+  // Single-line linked image: [![alt](url1)](url2)
+  m = content.match(/(\[!\[[^\]]*\]\([^)]+\)\]\([^)]+\))/);
+  if (m) candidates.push({ fullMatch: m[0], imageUrl: extractImageUrl(m[0]), index: m.index });
+  // Single-line plain image: ![alt](url)
+  m = content.match(/(!\[[^\]]*\]\([^)]+\))/);
+  if (m) candidates.push({ fullMatch: m[0], imageUrl: extractImageUrl(m[0]), index: m.index });
+  if (candidates.length === 0) return { fullMatch: '', imageUrl: '' };
+  // Pick the one that appears earliest in the content
+  candidates.sort((a, b) => a.index - b.index);
+  return { fullMatch: candidates[0].fullMatch, imageUrl: candidates[0].imageUrl };
+}
+
 export function renderPostsSidebar() {
   const list = $('posts-sidebar-list');
   list.innerHTML = '';
@@ -18,8 +75,10 @@ export function renderPostsSidebar() {
 
     li.innerHTML = `
       <div class="post-sidebar-title" title="${escHtml(displayTitle)}">${escHtml(displayTitle)}</div>
+      ${renderTagChips(post.tags, 'post-sidebar-tags')}
       <button class="post-sidebar-delete" title="Delete post">&#x2716;</button>
     `;
+    attachTagClickHandlers(li);
 
     // Double-click to rename title
     const titleEl = li.querySelector('.post-sidebar-title');
@@ -124,15 +183,18 @@ export function renderPostsView() {
 }
 
 function renderPostReader(post) {
+  const content = post.content_markdown || '';
+
   // Title & Cover section
   const titleCoverHtml = renderTitleCover(post);
   $('post-title-cover').innerHTML = titleCoverHtml;
+  attachTagClickHandlers($('post-title-cover'));
 
   // Summary section
   renderSummaryBlock(post);
 
   // Content — strip title and cover image used in the header to avoid duplication
-  let contentMd = post.content_markdown || '';
+  let contentMd = content;
   const headingMatch = contentMd.match(/^#\s+.+$/m);
   if (headingMatch) {
     // Article: strip the heading line
@@ -140,13 +202,20 @@ function renderPostReader(post) {
   } else {
     // Tweet: strip first non-image line used as title
     const lines = contentMd.split('\n');
-    if (lines[0] && !lines[0].startsWith('![')) {
+    if (lines[0] && !lines[0].startsWith('![') && !lines[0].startsWith('[')) {
       lines.shift();
       contentMd = lines.join('\n');
     }
   }
-  // Strip first image (linked or not) used as cover
-  contentMd = contentMd.replace(/(?:\[?!\[.*?\]\([^)]+\)\]\([^)]+\)|!\[.*?\]\([^)]+\))/, '');
+
+  // Strip the cover image from content if it was shown in the header
+  const firstImg = findFirstImage(content);
+  if (firstImg.fullMatch && firstImg.imageUrl) {
+    // Escape special regex chars in the matched string for safe replacement
+    const escaped = firstImg.fullMatch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    contentMd = contentMd.replace(escaped, '');
+  }
+
   $('post-reader-content').innerHTML = mdToHtml(contentMd.trim());
 
   // Showcase column
@@ -162,7 +231,7 @@ function renderTitleCover(post) {
     title = headingMatch[1];
   } else {
     const firstLine = content.split('\n')[0];
-    if (firstLine && !firstLine.startsWith('![')) {
+    if (firstLine && !firstLine.startsWith('![') && !firstLine.startsWith('[')) {
       title = firstLine.slice(0, 100);
     }
   }
@@ -172,11 +241,10 @@ function renderTitleCover(post) {
     html += `<h1 class="post-title">${escHtml(title)}</h1>`;
   }
 
-  // Cover image — handle both plain images and linked images
-  const imgMatch = content.match(/(?:\[?!\[.*?\]\(([^)]+)\)\]\([^)]+\)|!\[.*?\]\(([^)]+)\))/);
-  const coverUrl = imgMatch ? (imgMatch[1] || imgMatch[2]) : '';
-  if (coverUrl) {
-    html += `<img class="post-cover-img" src="${escHtml(coverUrl)}" alt="" />`;
+  // Cover image — use helper that handles linked images (single/multi-line)
+  const firstImg = findFirstImage(content);
+  if (firstImg.imageUrl) {
+    html += `<img class="post-cover-img" src="${escHtml(firstImg.imageUrl)}" alt="" />`;
   }
 
   const avatarUrl = post.author_avatar_url || '';
@@ -205,6 +273,7 @@ function renderTitleCover(post) {
         ${postedDate ? `<span>Posted ${postedDate}</span>` : ''}
         ${savedDate ? `<span class="post-saved-date">Saved ${savedDate}</span>` : ''}
       </div>
+      ${renderTagChips(post.tags, 'post-reader-tags')}
     </div>
   `;
 
@@ -212,51 +281,57 @@ function renderTitleCover(post) {
 }
 
 function renderPostCards() {
+  const compact = state.postsCardMode === 'compact';
   const cards = state.posts.map((post, idx) => {
     const content = post.content_markdown || '';
     const displayTitle = post.title || content.replace(/!\[.*?\]\(.*?\)/g, '').replace(/@\w+/g, '').slice(0, 60).trim() || 'No content';
 
-    // Handle both plain images and linked images
-    const imgMatch = content.match(/(?:\[?!\[.*?\]\(([^)]+)\)\]\([^)]+\)|!\[.*?\]\(([^)]+)\))/);
-    const coverUrl = imgMatch ? (imgMatch[1] || imgMatch[2]) : '';
+    // Handle both plain images and linked images (single-line and multi-line)
+    const firstImg = findFirstImage(content);
+    const coverUrl = firstImg.imageUrl;
 
     const coverHtml = coverUrl
-      ? `<div class="post-card-cover"><img src="${escHtml(coverUrl)}" alt="" loading="lazy" /></div>`
-      : `<div class="post-card-cover post-card-cover-placeholder"></div>`;
+      ? `<div class="post-card-cover${compact ? ' compact' : ''}"><img src="${escHtml(coverUrl)}" alt="" loading="lazy" /></div>`
+      : `<div class="post-card-cover post-card-cover-placeholder${compact ? ' compact' : ''}"></div>`;
 
-    const avatarUrl = post.author_avatar_url || '';
-    const avatarHtml = avatarUrl
-      ? `<img class="post-card-avatar" src="${escHtml(avatarUrl)}" alt="" />`
-      : `<div class="post-card-avatar post-card-avatar-ph">${escHtml((post.author_name || '?')[0])}</div>`;
-
-    const postedDate = post.posted_at
-      ? new Date(post.posted_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-      : '';
-
-    return `<div class="post-card" data-card-idx="${idx}">
-      ${coverHtml}
-      <div class="post-card-body">
+    const bodyHtml = compact ? '' : (() => {
+      const avatarUrl = post.author_avatar_url || '';
+      const avatarHtml = avatarUrl
+        ? `<img class="post-card-avatar" src="${escHtml(avatarUrl)}" alt="" />`
+        : `<div class="post-card-avatar post-card-avatar-ph">${escHtml((post.author_name || '?')[0])}</div>`;
+      const postedDate = post.posted_at
+        ? new Date(post.posted_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+        : '';
+      return `<div class="post-card-body">
         <div class="post-card-title">${escHtml(displayTitle)}</div>
         <div class="post-card-meta">
           ${avatarHtml}
           <span class="post-card-author">${escHtml(post.author_name || '')}</span>
           ${postedDate ? `<span class="post-card-date">${postedDate}</span>` : ''}
         </div>
-      </div>
+        ${renderTagChips(post.tags, 'post-card-tags')}
+      </div>`;
+    })();
+
+    return `<div class="post-card${compact ? ' compact' : ''}" data-card-idx="${idx}">
+      ${coverHtml}
+      ${bodyHtml}
     </div>`;
   }).join('');
 
   // Use setTimeout to attach click handlers after DOM insertion
   setTimeout(() => {
     document.querySelectorAll('.post-card[data-card-idx]').forEach(card => {
-      card.addEventListener('click', () => {
+      card.addEventListener('click', (e) => {
+        if (e.target.classList.contains('tag-chip')) return;
         const idx = parseInt(card.dataset.cardIdx, 10);
         if (state.posts[idx]) openPostReader(state.posts[idx]);
       });
     });
+    attachTagClickHandlers(document.querySelector('.post-cards-grid'));
   }, 0);
 
-  return `<div class="post-cards-grid">${cards}</div>`;
+  return `<div class="post-cards-grid${compact ? ' compact' : ''}">${cards}</div>`;
 }
 
 export function openPostReader(post) {

@@ -6,8 +6,188 @@ import re
 import httpx
 
 import db
-from config import POST_IMAGES_DIR, DEFAULT_POSTS_PROMPT
+from config import POST_IMAGES_DIR, DEFAULT_POSTS_PROMPT, OV_STAGING_DIR
 from services.env import resolve
+
+
+OV_BIN = "/Users/bytedance/.local/bin/ov"
+_OV_POST_URI_RE = re.compile(r"viking://resources/post-(\d+)")
+
+
+def _slugify(text: str, max_len: int = 50) -> str:
+    s = re.sub(r"[^a-zA-Z0-9_-]+", "-", text or "").strip("-")
+    return s[:max_len] or "untitled"
+
+
+async def stage_post_markdown(post_id: int, post: dict) -> "Path":
+    """Write a persistent markdown staging file for a post, return path."""
+    from pathlib import Path  # local import, module is already available
+    OV_STAGING_DIR.mkdir(parents=True, exist_ok=True)
+    # Clean up older files for same post-id (title might change)
+    for f in OV_STAGING_DIR.glob(f"post-{post_id}-*.md"):
+        try:
+            f.unlink()
+        except OSError:
+            pass
+    title = post.get("title") or ((post.get("content_markdown") or "").split("\n", 1)[0][:60]) or f"Post {post_id}"
+    slug = _slugify(title)
+    path = OV_STAGING_DIR / f"post-{post_id}-{slug}.md"
+    tags = post.get("tags") or []
+    summary_section = ""
+    summary = post.get("summary_json")
+    if summary:
+        try:
+            s = json.loads(summary) if isinstance(summary, str) else summary
+            if isinstance(s, dict):
+                en, zh = s.get("en") or "", s.get("zh") or ""
+                if en or zh:
+                    summary_section = f"\n\n---\n\n## Summary\n\n### English\n{en}\n\n### 中文\n{zh}\n"
+        except Exception:
+            pass
+    header = (
+        f"# {title}\n\n"
+        f"- Post ID: {post_id}\n"
+        f"- Source: {post.get('source_url')}\n"
+        f"- Author: {post.get('author_name')} ({post.get('author_handle') or ''})\n"
+        f"- Posted at: {post.get('posted_at')}\n"
+        f"- Saved at: {post.get('created_at')}\n"
+        f"- Tags: {', '.join(tags) if tags else '(none)'}\n\n---\n\n"
+    )
+    body = post.get("content_markdown") or ""
+    path.write_text(header + body + summary_section, encoding="utf-8")
+    return path
+
+
+async def add_post_to_ov(post_id: int) -> None:
+    """Best-effort: stage post to markdown and ingest into OpenViking."""
+    try:
+        post = await db.get_post(post_id)
+        if not post:
+            return
+        path = await stage_post_markdown(post_id, post)
+        reason = f"localweb Post {post_id} — {post.get('title') or post.get('source_url')}"
+        instruction = f"localweb-post-id: {post_id}. Source: {post.get('source_url')}"
+        proc = await asyncio.create_subprocess_exec(
+            OV_BIN, "add-resource", str(path),
+            "--reason", reason, "--instruction", instruction,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            print(f"[ov] add-resource failed post {post_id}: {stderr.decode().strip()}")
+        else:
+            print(f"[ov] added post {post_id}")
+    except Exception as e:
+        print(f"[ov] error adding post {post_id}: {e}")
+
+
+def _extract_post_id_from_uri(uri: str):
+    m = _OV_POST_URI_RE.search(uri or "")
+    return int(m.group(1)) if m else None
+
+
+async def ov_find(query: str, threshold: float = 0.35, node_limit: int = 20) -> list[dict]:
+    """Run `ov find`, filter by threshold, enrich posts via DB, sort by score desc.
+
+    Returns a list of result dicts:
+      - Post: {type:'post', score, chunk, uri, id, title, author_name, cover_url}
+      - Memory: {type:'memory', score, content, uri}
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            OV_BIN, "find", query,
+            "-t", str(threshold),
+            "-n", str(node_limit),
+            "-o", "json",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            print(f"[ov-find] rc={proc.returncode}: {stderr.decode().strip()}")
+            return []
+    except Exception as e:
+        print(f"[ov-find] error: {e}")
+        return []
+
+    # Output starts with a "cmd: ..." line, then the JSON object.
+    text = stdout.decode().strip()
+    if text.startswith("cmd:"):
+        _, _, rest = text.partition("\n")
+        text = rest.strip()
+    try:
+        payload = json.loads(text)
+    except Exception as e:
+        print(f"[ov-find] json parse error: {e}")
+        return []
+    if not payload.get("ok"):
+        return []
+    result = payload.get("result") or {}
+
+    items: list[dict] = []
+
+    # Collapse resources by post_id, keep best-scoring chunk per post
+    best_by_post: dict[int, dict] = {}
+    for r in result.get("resources") or []:
+        score = float(r.get("score") or 0)
+        if score < threshold:
+            continue
+        uri = r.get("uri") or ""
+        pid = _extract_post_id_from_uri(uri)
+        if pid is None:
+            continue
+        existing = best_by_post.get(pid)
+        if existing and existing["score"] >= score:
+            continue
+        best_by_post[pid] = {
+            "score": score,
+            "uri": uri,
+            "chunk": r.get("abstract") or "",
+        }
+
+    # Enrich with DB rows
+    for pid, meta in best_by_post.items():
+        post = await db.get_post(pid)
+        if not post:
+            continue
+        content = post.get("content_markdown") or ""
+        img_match = re.search(r'!\[[^\]]*\]\(([^)]+)\)', content)
+        cover_url = (post.get("cover_url") or (img_match.group(1) if img_match else "")) or ""
+        if post.get("title"):
+            title = post["title"]
+        else:
+            # First non-empty, non-image line; strip markdown heading marks
+            fallback = ""
+            for line in content.splitlines():
+                s = line.strip()
+                if not s or s.startswith("!["):
+                    continue
+                fallback = re.sub(r"^#+\s*", "", s)[:80]
+                break
+            title = fallback or f"Post {pid}"
+        items.append({
+            "type": "post",
+            "id": pid,
+            "score": meta["score"],
+            "uri": meta["uri"],
+            "chunk": meta["chunk"],
+            "title": title,
+            "author_name": post.get("author_name") or "",
+            "cover_url": cover_url,
+        })
+
+    for m in result.get("memories") or []:
+        score = float(m.get("score") or 0)
+        if score < threshold:
+            continue
+        items.append({
+            "type": "memory",
+            "score": score,
+            "uri": m.get("uri") or "",
+            "content": m.get("abstract") or m.get("content") or "",
+        })
+
+    items.sort(key=lambda x: x["score"], reverse=True)
+    return items
 
 
 def _parse_bilingual_json(text: str) -> dict:

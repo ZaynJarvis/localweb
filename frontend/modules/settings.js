@@ -4,29 +4,39 @@ import { savePostsSettings, summarizePost } from './api-client.js';
 import { renderSummaryBlock } from './summary.js';
 
 const PALETTES = {
+  brutalist: {
+    label: 'Neo-Brutalism',
+    dataTheme: 'brutalist',
+    vars: {}
+  },
+  'brutalist-dark': {
+    label: 'Neo-Brutalism (Dark)',
+    dataTheme: 'brutalist-dark',
+    vars: {}
+  },
   default: {
     label: 'Default',
-    vars: { '--bg': '#0f1117', '--surface': '#1a1d27', '--surface2': '#222536', '--border': '#2d3148', '--accent': '#6c8cff', '--accent-hover': '#8aa3ff', '--text': '#e2e4f0', '--muted': '#7a7f9d' }
+    vars: { '--bg': '#0f1117', '--surface': '#1a1d27', '--surface2': '#222536', '--border': '#2d3148', '--accent': '#6c8cff', '--accent-hover': '#8aa3ff', '--text': '#e2e4f0', '--muted': '#7a7f9d', '--radius': '8px', '--font': "'Inter', system-ui, sans-serif", '--mono': "'JetBrains Mono', 'Fira Code', monospace" }
   },
   midnight: {
     label: 'Midnight Blue',
-    vars: { '--bg': '#0a0e1a', '--surface': '#111827', '--surface2': '#1e2a3a', '--border': '#253348', '--accent': '#4facfe', '--accent-hover': '#7ac0ff', '--text': '#dce4f0', '--muted': '#6b7fa0' }
+    vars: { '--bg': '#0a0e1a', '--surface': '#111827', '--surface2': '#1e2a3a', '--border': '#253348', '--accent': '#4facfe', '--accent-hover': '#7ac0ff', '--text': '#dce4f0', '--muted': '#6b7fa0', '--radius': '8px', '--font': "'Inter', system-ui, sans-serif", '--mono': "'JetBrains Mono', 'Fira Code', monospace" }
   },
   emerald: {
     label: 'Emerald',
-    vars: { '--bg': '#0d1117', '--surface': '#161b22', '--surface2': '#1c2630', '--border': '#2a3540', '--accent': '#4ade80', '--accent-hover': '#6ee7a0', '--text': '#e0e8f0', '--muted': '#7a8a9d' }
+    vars: { '--bg': '#0d1117', '--surface': '#161b22', '--surface2': '#1c2630', '--border': '#2a3540', '--accent': '#4ade80', '--accent-hover': '#6ee7a0', '--text': '#e0e8f0', '--muted': '#7a8a9d', '--radius': '8px', '--font': "'Inter', system-ui, sans-serif", '--mono': "'JetBrains Mono', 'Fira Code', monospace" }
   },
   rose: {
     label: 'Rose',
-    vars: { '--bg': '#12101a', '--surface': '#1a1724', '--surface2': '#242030', '--border': '#332d42', '--accent': '#f472b6', '--accent-hover': '#f9a0ce', '--text': '#e8e2f0', '--muted': '#8a7f9d' }
+    vars: { '--bg': '#12101a', '--surface': '#1a1724', '--surface2': '#242030', '--border': '#332d42', '--accent': '#f472b6', '--accent-hover': '#f9a0ce', '--text': '#e8e2f0', '--muted': '#8a7f9d', '--radius': '8px', '--font': "'Inter', system-ui, sans-serif", '--mono': "'JetBrains Mono', 'Fira Code', monospace" }
   },
   amber: {
     label: 'Amber',
-    vars: { '--bg': '#141210', '--surface': '#1c1a16', '--surface2': '#262320', '--border': '#3a3530', '--accent': '#f59e0b', '--accent-hover': '#fbbf24', '--text': '#f0ebe0', '--muted': '#9d937a' }
+    vars: { '--bg': '#141210', '--surface': '#1c1a16', '--surface2': '#262320', '--border': '#3a3530', '--accent': '#f59e0b', '--accent-hover': '#fbbf24', '--text': '#f0ebe0', '--muted': '#9d937a', '--radius': '8px', '--font': "'Inter', system-ui, sans-serif", '--mono': "'JetBrains Mono', 'Fira Code', monospace" }
   },
   mono: {
     label: 'Mono',
-    vars: { '--bg': '#111111', '--surface': '#1a1a1a', '--surface2': '#222222', '--border': '#333333', '--accent': '#999999', '--accent-hover': '#bbbbbb', '--text': '#e0e0e0', '--muted': '#777777' }
+    vars: { '--bg': '#111111', '--surface': '#1a1a1a', '--surface2': '#222222', '--border': '#333333', '--accent': '#999999', '--accent-hover': '#bbbbbb', '--text': '#e0e0e0', '--muted': '#777777', '--radius': '8px', '--font': "'Inter', system-ui, sans-serif", '--mono': "'JetBrains Mono', 'Fira Code', monospace" }
   }
 };
 
@@ -49,6 +59,7 @@ function getBasePalette() {
 function applyCustomAccent(hex) {
   const base = getBasePalette();
   const root = document.documentElement;
+  root.removeAttribute('data-theme'); // Ensure we're not in brutalist mode
   Object.entries(base.vars).forEach(([prop, val]) => {
     root.style.setProperty(prop, val);
   });
@@ -64,9 +75,18 @@ export function applyPalette(name) {
   }
   const palette = PALETTES[name] || PALETTES['default'];
   const root = document.documentElement;
-  Object.entries(palette.vars).forEach(([prop, val]) => {
-    root.style.setProperty(prop, val);
-  });
+  
+  // Handle data-theme for brutalist
+  if (palette.dataTheme) {
+    root.setAttribute('data-theme', palette.dataTheme);
+    // Reset any inline styles to let CSS variables take over
+    root.removeAttribute('style');
+  } else {
+    root.removeAttribute('data-theme');
+    Object.entries(palette.vars).forEach(([prop, val]) => {
+      root.style.setProperty(prop, val);
+    });
+  }
 }
 
 function getCustomColors() {

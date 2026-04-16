@@ -270,3 +270,43 @@ export async function fetchLoggerConsolidate() {
   if (!r.ok) throw new Error((await r.json()).detail || 'Failed to consolidate');
   return r.json();
 }
+
+// --- Logger Comments ---
+export async function fetchLoggerComments(contextType, contextId) {
+  const params = new URLSearchParams();
+  if (contextType) params.set('context_type', contextType);
+  if (contextId) params.set('context_id', contextId);
+  const r = await fetch(`/api/logger/comments?${params}`);
+  return r.json();
+}
+
+export async function createLoggerComment(content, contextType, contextId, selectedText) {
+  const body = { content, context_type: contextType || 'general' };
+  if (contextId) body.context_id = contextId;
+  if (selectedText) body.selected_text = selectedText;
+  const r = await fetch('/api/logger/comments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return r.json();
+}
+
+export async function deleteLoggerComment(commentId) {
+  const r = await fetch(`/api/logger/comments/${commentId}`, { method: 'DELETE' });
+  return r.json();
+}
+
+// --- Logger Preferences ---
+export async function fetchLoggerPreferences(category, commentId) {
+  const params = new URLSearchParams();
+  if (category) params.set('category', category);
+  if (commentId) params.set('comment_id', commentId);
+  const r = await fetch(`/api/logger/preferences?${params}`);
+  return r.json();
+}
+
+export async function deleteLoggerPreference(prefId) {
+  const r = await fetch(`/api/logger/preferences/${prefId}`, { method: 'DELETE' });
+  return r.json();
+}

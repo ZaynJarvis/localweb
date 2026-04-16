@@ -58,28 +58,78 @@ export function mdToHtml(md) {
   html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
   html = html.replace(/(?<!\w)_(.+?)_(?!\w)/g, '<em>$1</em>');
 
+  // Process lists FIRST before other block elements to keep them together
+  // Split into lines for manual list grouping (ignores empty lines between list items)
+  const lines = html.split('\n');
+  let inList = null; // 'ul' or 'ol' or null
+  let processedLines = [];
+  let currentListItems = [];
+
+  function flushList() {
+    if (inList && currentListItems.length > 0) {
+      processedLines.push(`<${inList}>`);
+      processedLines.push(...currentListItems.map(item => `<li>${item}</li>`));
+      processedLines.push(`</${inList}>`);
+      currentListItems = [];
+      inList = null;
+    }
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmed = line.trim();
+    let isUl = false;
+    let isOl = false;
+    let listType = null;
+    let itemContent = null;
+
+    if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+      isUl = true;
+      listType = 'ul';
+      itemContent = trimmed.replace(/^[-*] /, '');
+    } else if (/^\d+\. /.test(trimmed)) {
+      isOl = true;
+      listType = 'ol';
+      itemContent = trimmed.replace(/^\d+\. /, '');
+    }
+
+    if (listType) {
+      // If we're not in a list, or switching list types, flush the previous list
+      if (inList !== listType) {
+        flushList();
+        inList = listType;
+      }
+      currentListItems.push(itemContent);
+    } else {
+      // If it's an empty line and we're in a list, skip it (keep list open)
+      if (trimmed === '' && inList) {
+        continue;
+      }
+      // Otherwise, flush the list and add the line
+      flushList();
+      processedLines.push(line);
+    }
+  }
+
+  // Flush any remaining list at the end
+  flushList();
+
+  // Rejoin lines back to html
+  html = processedLines.join('\n');
+
   // Blockquotes: lines starting with > (including bare > lines)
   html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
   html = html.replace(/^&gt;\s*$/gm, '<blockquote></blockquote>');
   // Merge consecutive blockquotes
   html = html.replace(/<\/blockquote>\n<blockquote>/g, '\n');
 
-  // Headings
+  // Headings (must be ordered longest-first so #### isn't consumed by #)
+  html = html.replace(/^###### (.+)$/gm, '<h6>$1</h6>');
+  html = html.replace(/^##### (.+)$/gm, '<h5>$1</h5>');
+  html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
   html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
   html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
   html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
-
-  // Unordered lists: sequences of lines starting with - or *
-  html = html.replace(/(?:^[-*] .+$\n?)+/gm, match => {
-    const lines = match.trim().split('\n');
-    return '<ul>' + lines.map(l => `<li>${l.replace(/^[-*] /, '')}</li>`).join('') + '</ul>\n\n';
-  });
-
-  // Ordered lists: sequences of lines starting with N.
-  html = html.replace(/(?:^\d+\. .+$\n?)+/gm, match => {
-    const lines = match.trim().split('\n');
-    return '<ol>' + lines.map(l => `<li>${l.replace(/^\d+\. /, '')}</li>`).join('') + '</ol>\n\n';
-  });
 
   // GFM checkboxes: - [ ] / - [x] inside <li> tags
   html = html.replace(/<li>\[x\] /gi, '<li><input type="checkbox" checked disabled> ');

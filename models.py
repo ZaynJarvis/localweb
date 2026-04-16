@@ -38,6 +38,15 @@ class TitlePayload(BaseModel):
     title: str
 
 
+class TagsPayload(BaseModel):
+    tags: list[str]
+
+
+class BulkTagsPayload(BaseModel):
+    # map of source_url → list of tags
+    by_url: dict[str, list[str]]
+
+
 class ChatMessage(BaseModel):
     role: str  # "user" or "assistant"
     content: str

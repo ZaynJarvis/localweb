@@ -12,19 +12,7 @@
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
       <div class="sidebar-header">
-        <div class="nav-tabs">
-          <button class="nav-tab active" data-view="apis" id="tab-apis">APIs</button>
-          <button class="nav-tab" data-view="posts" id="tab-posts">Posts</button>
-          <button class="nav-tab" data-view="logger" id="tab-logger">Logger</button>
-        </div>
-        <div class="sidebar-btns" id="sidebar-btns-apis">
-          <button class="btn-icon btn-import-curl" id="btn-import" title="Import from curl">&#x2913;</button>
-          <button class="btn-icon" id="btn-new" title="New API">+</button>
-        </div>
-        <div class="sidebar-btns hidden" id="sidebar-btns-posts">
-          <button class="btn-icon" id="btn-posts-settings" title="Posts Settings">&#9881;</button>
-          <button class="btn-icon" id="btn-gallery" title="Gallery"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><rect x="0" y="0" width="6" height="6"/><rect x="8" y="0" width="6" height="6"/><rect x="0" y="8" width="6" height="6"/><rect x="8" y="8" width="6" height="6"/></svg></button>
-        </div>
+        <div class="sidebar-title" id="sidebar-title">APIs</div>
         <div class="search-bar hidden" id="search-bar">
           <input type="text" id="search-input" placeholder="Search posts and knowledge..." />
         </div>
@@ -35,6 +23,36 @@
       <ul class="api-list hidden" id="posts-sidebar-list"></ul>
       <!-- Logger sidebar list -->
       <div class="hidden" id="logger-sidebar-list"></div>
+      <!-- Email sidebar list -->
+      <div class="hidden" id="email-sidebar-list"></div>
+      <!-- Sidebar bottom: per-tab utils (left) + 2x2 tab grid (right) -->
+      <div class="sidebar-bottom" id="sidebar-bottom">
+        <div class="sidebar-utils-col" id="sidebar-utils-col">
+          <div class="sidebar-utils" id="sidebar-utils-apis">
+            <button class="btn-icon btn-import-curl" id="btn-import" title="Import from curl">&#x2913;</button>
+            <button class="btn-icon" id="btn-new" title="New API">+</button>
+            <button class="btn-icon" id="btn-apis-settings" title="APIs Settings">&#9881;</button>
+          </div>
+          <div class="sidebar-utils hidden" id="sidebar-utils-posts">
+            <button class="btn-icon" id="btn-card-mode" title="Toggle card layout">&#9638;</button>
+            <button class="btn-icon" id="btn-gallery" title="Gallery"><svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><rect x="0" y="0" width="6" height="6"/><rect x="8" y="0" width="6" height="6"/><rect x="0" y="8" width="6" height="6"/><rect x="8" y="8" width="6" height="6"/></svg></button>
+            <button class="btn-icon" id="btn-posts-settings" title="Posts Settings">&#9881;</button>
+          </div>
+          <div class="sidebar-utils hidden" id="sidebar-utils-logger">
+            <button class="btn-icon" id="btn-logger-refresh" title="Refresh session">&#8634;</button>
+          </div>
+          <div class="sidebar-utils hidden" id="sidebar-utils-email">
+            <button class="btn-icon" id="btn-email-run" title="Run triage now">&#9654;</button>
+            <button class="btn-icon" id="btn-email-settings" title="Email settings">&#9881;</button>
+          </div>
+        </div>
+        <div class="nav-tabs nav-tabs-grid" id="nav-tabs">
+          <button class="nav-tab active" data-view="apis" id="tab-apis">APIs</button>
+          <button class="nav-tab" data-view="posts" id="tab-posts">Posts</button>
+          <button class="nav-tab" data-view="logger" id="tab-logger">Logger</button>
+          <button class="nav-tab" data-view="email" id="tab-email">Email</button>
+        </div>
+      </div>
     </aside>
 
     <!-- Main -->
@@ -221,6 +239,9 @@
 
       <!-- Logger view -->
       <section id="logger-view" class="hidden"></section>
+
+      <!-- Email view -->
+      <section id="email-view" class="hidden"></section>
     </main>
   </div>
 

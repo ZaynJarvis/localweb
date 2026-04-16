@@ -6,7 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from config import POST_IMAGES_DIR
-from models import PostPayload, TitlePayload, SummaryChatPayload, SaveSummaryPayload
+from models import PostPayload, TitlePayload, SummaryChatPayload, SaveSummaryPayload, TagsPayload, BulkTagsPayload
 from services.post_service import (
     download_post_images,
     auto_generate_post_metadata,
@@ -15,27 +15,20 @@ from services.post_service import (
     search_and_stream,
     stream_summary_chat,
     save_summary_from_text,
+    add_post_to_ov,
+    ov_find,
 )
 
 router = APIRouter()
 
 
-async def add_to_ov(source_url: str):
-    """Best-effort: add saved post URL to OpenViking for knowledge indexing."""
+async def _ingest_post_to_ov_with_delay(post_id: int, delay_seconds: float = 2.0):
+    """Wait briefly so auto-generated title/summary can land, then ingest."""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "/Users/bytedance/.local/bin/ov", "add-resource", source_url,
-            "--reason", "Saved post to localweb",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode == 0:
-            print(f"[ov] added resource: {source_url}")
-        else:
-            print(f"[ov] failed (rc={proc.returncode}): {stderr.decode().strip()}")
+        await asyncio.sleep(delay_seconds)
+        await add_post_to_ov(post_id)
     except Exception as e:
-        print(f"[ov] error adding resource: {e}")
+        print(f"[ov] delayed ingest error post {post_id}: {e}")
 
 
 @router.post("/api/posts")
@@ -60,13 +53,24 @@ async def save_post(payload: PostPayload):
         post_id, payload.image_urls, payload.author_avatar_url, payload.content_markdown
     ))
     asyncio.create_task(auto_generate_post_metadata(post_id))
-    asyncio.create_task(add_to_ov(payload.source_url))
+    # Delay so title/summary can be generated before ingestion; ingest includes post-id.
+    asyncio.create_task(_ingest_post_to_ov_with_delay(post_id, delay_seconds=45.0))
     return {"id": post_id}
 
 
 @router.get("/api/posts")
 async def list_posts():
     return await db.get_all_posts()
+
+
+@router.get("/api/posts/find")
+async def find_posts(q: str, threshold: float = 0.35):
+    """Semantic search via `ov find`. Returns mixed list of post/memory cards sorted by score."""
+    q = (q or "").strip()
+    if not q:
+        return {"items": []}
+    items = await ov_find(q, threshold=threshold)
+    return {"items": items}
 
 
 @router.get("/api/posts/search")
@@ -83,6 +87,26 @@ async def search_posts(q: str, request: Request):
         yield f"event: done\ndata: {{}}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post("/api/posts/tags/bulk")
+async def bulk_update_tags(payload: BulkTagsPayload):
+    """Bulk-set tags keyed by source_url. Returns counts of matched/unmatched URLs."""
+    matched = []
+    unmatched = []
+    for url, tags in payload.by_url.items():
+        rowcount = await db.update_post_tags_by_url(url, tags)
+        (matched if rowcount else unmatched).append(url)
+    return {"matched": len(matched), "unmatched": unmatched}
+
+
+@router.put("/api/posts/{post_id}/tags")
+async def update_post_tags_endpoint(post_id: int, payload: TagsPayload):
+    post = await db.get_post(post_id)
+    if not post:
+        raise HTTPException(404, "Post not found")
+    await db.update_post_tags(post_id, payload.tags)
+    return {"ok": True, "tags": payload.tags}
 
 
 @router.get("/api/posts/{post_id}")

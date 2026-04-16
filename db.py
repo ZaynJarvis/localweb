@@ -75,6 +75,32 @@ async def init_db():
             await db.commit()
         except Exception:
             pass
+        try:
+            await db.execute("ALTER TABLE posts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
+            await db.commit()
+        except Exception:
+            pass
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS logger_comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content TEXT NOT NULL,
+                context_type TEXT NOT NULL DEFAULT 'general',
+                context_id TEXT,
+                selected_text TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS user_preferences (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                category TEXT NOT NULL,
+                content TEXT NOT NULL,
+                source_comment_id INTEGER REFERENCES logger_comments(id) ON DELETE SET NULL,
+                confidence REAL NOT NULL DEFAULT 0.5,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -173,6 +199,7 @@ def _deserialize_post(row):
     d["image_urls"] = json.loads(d["image_urls"]) if d.get("image_urls") else []
     d["local_images"] = json.loads(d["local_images"]) if d.get("local_images") else []
     d["summary_json"] = json.loads(d["summary_json"]) if d.get("summary_json") else None
+    d["tags"] = json.loads(d["tags"]) if d.get("tags") else []
     return d
 
 
@@ -266,6 +293,25 @@ async def update_post_title(post_id: int, title: str):
         await db.commit()
 
 
+async def update_post_tags(post_id: int, tags: list):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE posts SET tags=? WHERE id=?",
+            (json.dumps(tags), post_id)
+        )
+        await db.commit()
+
+
+async def update_post_tags_by_url(source_url: str, tags: list):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "UPDATE posts SET tags=? WHERE source_url=?",
+            (json.dumps(tags), source_url)
+        )
+        await db.commit()
+        return cur.rowcount
+
+
 # --- Settings CRUD ---
 
 async def get_setting(key: str, default=None):
@@ -312,3 +358,106 @@ async def delete_gallery_image(image_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM gallery_images WHERE id=?", (image_id,))
         await db.commit()
+
+
+# --- Logger Comments CRUD ---
+
+async def create_logger_comment(content: str, context_type: str, context_id: str = None,
+                                 selected_text: str = None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """INSERT INTO logger_comments (content, context_type, context_id, selected_text)
+               VALUES (?,?,?,?)""",
+            (content, context_type, context_id, selected_text)
+        )
+        await db.commit()
+        return cur.lastrowid
+
+
+async def get_logger_comments(context_type: str = None, context_id: str = None, limit: int = 100):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if context_type:
+            if context_id:
+                sql = "SELECT * FROM logger_comments WHERE context_type=? AND context_id=? ORDER BY created_at DESC LIMIT ?"
+                params = (context_type, context_id, limit)
+            else:
+                sql = "SELECT * FROM logger_comments WHERE context_type=? ORDER BY created_at DESC LIMIT ?"
+                params = (context_type, limit)
+        else:
+            sql = "SELECT * FROM logger_comments ORDER BY created_at DESC LIMIT ?"
+            params = (limit,)
+        async with db.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def delete_logger_comment(comment_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM logger_comments WHERE id=?", (comment_id,))
+        await db.commit()
+
+
+# --- User Preferences CRUD ---
+
+async def create_user_preference(category: str, content: str, source_comment_id: int = None,
+                                  confidence: float = 0.5):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """INSERT INTO user_preferences (category, content, source_comment_id, confidence)
+               VALUES (?,?,?,?)""",
+            (category, content, source_comment_id, confidence)
+        )
+        await db.commit()
+        return cur.lastrowid
+
+
+async def get_user_preferences(category: str = None, limit: int = 100):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if category:
+            sql = "SELECT * FROM user_preferences WHERE category=? ORDER BY updated_at DESC LIMIT ?"
+            params = (category, limit)
+        else:
+            sql = "SELECT * FROM user_preferences ORDER BY updated_at DESC LIMIT ?"
+            params = (limit,)
+        async with db.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def get_preferences_by_comment(comment_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM user_preferences WHERE source_comment_id=? ORDER BY created_at",
+            (comment_id,)
+        ) as cur:
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+
+async def delete_user_preference(pref_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM user_preferences WHERE id=?", (pref_id,))
+        await db.commit()
+
+
+async def update_user_preference(pref_id: int, content: str = None, confidence: float = None):
+    async with aiosqlite.connect(DB_PATH) as db:
+        updates = []
+        params = []
+        if content is not None:
+            updates.append("content=?")
+            params.append(content)
+        if confidence is not None:
+            updates.append("confidence=?")
+            params.append(confidence)
+        if updates:
+            updates.append("updated_at=datetime('now')")
+            params.append(pref_id)
+            await db.execute(
+                f"UPDATE user_preferences SET {', '.join(updates)} WHERE id=?",
+                params
+            )
+            await db.commit()
